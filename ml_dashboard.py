@@ -18,6 +18,7 @@ Instalacion:
     pip install selenium webdriver-manager beautifulsoup4
 """
 
+import os
 import sys
 import io
 import re
@@ -251,7 +252,8 @@ def regenerar_html():
     with open("ml_data.json", encoding="utf-8") as f:
         payload = json.load(f)
     html = build_html(payload)
-    for fname in ("ml_ranking.html", "index.html"):
+    os.makedirs("public", exist_ok=True)
+    for fname in ("ml_ranking.html", os.path.join("public", "index.html")):
         with open(fname, "w", encoding="utf-8") as f:
             f.write(html)
     print("Dashboard regenerado en ml_ranking.html e index.html (desde datos existentes)")
@@ -289,7 +291,8 @@ def main(modelos: list, use_profile: bool = False):
     print("\nDatos guardados en ml_data.json")
 
     html = build_html(payload)
-    for fname in ("ml_ranking.html", "index.html"):
+    os.makedirs("public", exist_ok=True)
+    for fname in ("ml_ranking.html", os.path.join("public", "index.html")):
         with open(fname, "w", encoding="utf-8") as f:
             f.write(html)
     print("Dashboard generado en ml_ranking.html e index.html")
