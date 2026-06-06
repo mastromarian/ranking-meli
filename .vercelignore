@@ -1,0 +1,8 @@
+# Que Vercel NO detecte esto como proyecto Python.
+# Solo debe servir index.html como sitio estatico.
+*.py
+requirements.txt
+ml_data.json
+ml_ranking.html
+README.md
+.gitignore
