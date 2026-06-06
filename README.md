@@ -32,7 +32,8 @@ python ml_dashboard.py
 
 Scrapea todos los modelos configurados en la lista `MODELOS` y genera:
 - `ml_data.json` — datos crudos
-- `ml_ranking.html` — dashboard interactivo (abrilo en el navegador)
+- `ml_ranking.html` — dashboard interactivo para abrir local (doble clic)
+- `public/index.html` — misma versión, para publicar en Vercel
 
 ### Modelos puntuales
 
@@ -64,6 +65,37 @@ python ml_ranking.py "yamaha mt 03"          # solo 0km
 python ml_ranking.py "yamaha mt 03" --deep   # completa vendedores faltantes
 python ml_ranking.py "yamaha mt 03" --all    # incluye usadas
 ```
+
+## Publicación en la web (Vercel)
+
+El dashboard está publicado en:
+
+**👉 https://ranking-meli.vercel.app**
+
+El sitio se sirve desde la carpeta `public/` (que contiene el `index.html` con los datos
+embebidos). Los archivos Python quedan fuera del deploy, así Vercel lo trata como sitio
+estático y no intenta buildear Python.
+
+### Actualizar el dashboard publicado
+
+```bash
+# 1. Regenerar los datos y el HTML
+cd "Ranking Meli"
+python ml_dashboard.py
+
+# 2. Publicar en Vercel
+cd public
+vercel deploy --prod --yes
+```
+
+> El CLI de Vercel ya queda logueado. Si en una terminal nueva no encuentra `vercel`,
+> agregá Node y el bin de npm al PATH, o reiniciá la terminal.
+
+### Notas del deploy
+
+- El proyecto en Vercel se llama `ranking-meli` y apunta a la carpeta `public/`.
+- La "Deployment Protection" está desactivada para que el sitio sea público.
+- `index.html` lleva los datos embebidos, por eso no hace falta correr Python en el servidor.
 
 ## Configuración
 
