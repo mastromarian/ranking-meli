@@ -1,0 +1,21 @@
+# Datos generados
+ml_data.json
+ml_ranking.html
+ml_debug.html
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Chrome / Selenium
+.wdm/
+chromedriver*
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
