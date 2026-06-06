@@ -380,6 +380,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <!-- VISTA POR MOTO -->
   <div id="view-moto">
     <div class="controls">
+      <select id="sel-mmarca" onchange="onMotoMarcaChange()"></select>
       <select id="sel-moto" onchange="renderMoto()"></select>
     </div>
     <div class="meta" id="moto-link"></div>
@@ -446,13 +447,36 @@ function rowsOf(m) { return (DATA.modelos[m] && DATA.modelos[m].rows) || []; }
 function urlOf(m)  { return (DATA.modelos[m] && DATA.modelos[m].url) || ''; }
 
 // ---- VISTA POR MOTO ----
+function modelLabel(m) {
+  const parts = m.split(' ').slice(1).join(' ');
+  return (parts || m).toUpperCase();
+}
 function initMoto() {
-  const sel = document.getElementById('sel-moto');
-  Object.keys(DATA.modelos).forEach(m => {
+  // Filtro por marca
+  const selB = document.getElementById('sel-mmarca');
+  const marcas = [...new Set(Object.keys(DATA.modelos).map(brandOf))].sort();
+  marcas.forEach(b => {
     const o = document.createElement('option');
-    o.value = m; o.textContent = m.toUpperCase();
-    sel.appendChild(o);
+    o.value = b; o.textContent = b.toUpperCase();
+    selB.appendChild(o);
   });
+  // Modelos de la primera marca
+  fillMotoModelos(marcas[0]);
+  renderMoto();
+}
+function fillMotoModelos(marca) {
+  const sel = document.getElementById('sel-moto');
+  sel.innerHTML = '';
+  Object.keys(DATA.modelos)
+    .filter(m => brandOf(m) === marca)
+    .forEach(m => {
+      const o = document.createElement('option');
+      o.value = m; o.textContent = modelLabel(m);
+      sel.appendChild(o);
+    });
+}
+function onMotoMarcaChange() {
+  fillMotoModelos(document.getElementById('sel-mmarca').value);
   renderMoto();
 }
 function renderMoto() {
