@@ -317,6 +317,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .container { max-width: 1200px; margin: 0 auto; }
   h1 { font-size: 28px; margin-bottom: 4px; }
   .meta { color: #86868b; font-size: 13px; margin-bottom: 20px; }
+  .update-banner {
+    display: flex; align-items: center; gap: 14px;
+    padding: 18px 24px; border-radius: 14px; margin-bottom: 22px;
+    font-size: 20px; font-weight: 700; border: 2px solid;
+  }
+  .update-banner .ub-icon { font-size: 30px; }
+  .update-banner .ub-sub { font-size: 13px; font-weight: 500; opacity: .8; }
+  .ub-fresh { background: #e9f9ee; color: #137a36; border-color: #34c759; }
+  .ub-mid   { background: #fff8e6; color: #8a6d00; border-color: #ffcc00; }
+  .ub-stale { background: #fdeaea; color: #b3000f; border-color: #ff3b30; }
   .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
   .tab { padding: 10px 20px; background: #fff; border: 1px solid #d2d2d7; border-radius: 10px;
          cursor: pointer; font-size: 15px; font-weight: 500; transition: all .15s; }
@@ -360,7 +370,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <body>
 <div class="container">
   <h1>🏍️ ML Ranking Dashboard</h1>
-  <div class="meta" id="meta"></div>
+  <div class="update-banner" id="update-banner"></div>
 
   <div class="tabs">
     <div class="tab active" data-view="moto" onclick="setView('moto')">Por Moto</div>
@@ -392,7 +402,29 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <script>
 const DATA = __DATA__;
 
-document.getElementById('meta').textContent = 'Actualizado: ' + DATA.generated + ' · Solo 0km';
+// ---- Banner de ultima actualizacion con semaforo ----
+(function renderUpdateBanner() {
+  const banner = document.getElementById('update-banner');
+  // generated viene como "YYYY-MM-DD HH:MM"
+  const gen = new Date((DATA.generated || '').replace(' ', 'T'));
+  let cls = 'ub-stale', icon = '🔴', estado = 'Desactualizado';
+  if (!isNaN(gen)) {
+    const dias = Math.floor((Date.now() - gen.getTime()) / 86400000);
+    if (dias <= 3)      { cls = 'ub-fresh'; icon = '🟢'; estado = 'Actualizado'; }
+    else if (dias <= 7) { cls = 'ub-mid';   icon = '🟡'; estado = 'Conviene actualizar'; }
+    else                { cls = 'ub-stale'; icon = '🔴'; estado = 'Desactualizado'; }
+    const hace = dias === 0 ? 'hoy' : dias === 1 ? 'hace 1 día' : 'hace ' + dias + ' días';
+    banner.className = 'update-banner ' + cls;
+    banner.innerHTML =
+      '<span class="ub-icon">' + icon + '</span>' +
+      '<div><div>Última actualización: ' + DATA.generated + ' (' + hace + ')</div>' +
+      '<div class="ub-sub">' + estado + ' · Solo 0km · ' +
+      Object.keys(DATA.modelos).length + ' modelos</div></div>';
+  } else {
+    banner.className = 'update-banner ub-stale';
+    banner.innerHTML = '<span class="ub-icon">🔴</span><div>Fecha de actualización desconocida</div>';
+  }
+})();
 
 // ---- Helpers ----
 function fmtPrice(r) {
