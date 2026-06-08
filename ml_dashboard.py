@@ -270,15 +270,32 @@ def main(modelos: list, use_profile: bool = False):
     try:
         for i, modelo in enumerate(modelos, 1):
             print(f"[{i}/{len(modelos)}] {modelo}...", end="", flush=True)
-            try:
-                url, res, visitas = scrape_modelo(driver, modelo)
-                data[modelo] = {"url": url, "rows": res}
-                print(f" OK ({len(res)} 0km, {visitas} visitas)")
-            except Exception as e:
-                print(f" ERROR: {e}")
+            ok = False
+            for intento in range(2):  # hasta 2 intentos (recrea el driver si se cae)
+                try:
+                    url, res, visitas = scrape_modelo(driver, modelo)
+                    data[modelo] = {"url": url, "rows": res}
+                    print(f" OK ({len(res)} 0km, {visitas} visitas)")
+                    ok = True
+                    break
+                except Exception as e:
+                    msg = str(e).split("\n")[0][:60]
+                    if intento == 0:
+                        print(f" reintentando (driver caido: {msg})...", end="", flush=True)
+                        try:
+                            driver.quit()
+                        except Exception:
+                            pass
+                        driver = get_driver(use_profile=use_profile)
+                    else:
+                        print(f" ERROR: {msg}")
+            if not ok:
                 data[modelo] = {"url": search_to_url(modelo), "rows": []}
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
     payload = {
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
