@@ -25,6 +25,9 @@ jobs:
         run: python ml_dashboard.py
 
       - name: Deploy to Vercel
+        env:
+          VERCEL_ORG_ID: team_GepkDXLqwrlJxvAHeD9Q9rk9
+          VERCEL_PROJECT_ID: prj_Ynybw9MOmiAp5y8y8uucJANeKjaY
         run: |
           npm i -g vercel
           cd public
