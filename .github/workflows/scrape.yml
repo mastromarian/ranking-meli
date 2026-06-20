@@ -1,0 +1,35 @@
+name: Scrape ML Rankings
+
+on:
+  schedule:
+    # 3:00 AM Argentina (UTC-3) = 6:00 AM UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch: # permite correrlo manual desde GitHub
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper
+        env:
+          HEADLESS: '1'
+        run: python ml_dashboard.py
+
+      - name: Deploy to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          npm i -g vercel
+          cd public
+          vercel deploy --prod --yes \
+            --token "$VERCEL_TOKEN" \
+            --scope team_GepkDXLqwrlJxvAHeD9Q9rk9
