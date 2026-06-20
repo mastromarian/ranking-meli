@@ -98,7 +98,6 @@ def get_driver(use_profile: bool = False):
     if use_profile:
         # Usa tu perfil real de Chrome (logueado, con ubicacion) -> ML sirve los ads
         # IMPORTANTE: cerra Chrome antes de correr con --profile
-        import os
         profile_dir = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data")
         options.add_argument(f"--user-data-dir={profile_dir}")
         options.add_argument("--profile-directory=Default")
