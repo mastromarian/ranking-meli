@@ -1,0 +1,83 @@
+<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Comparador Publicaciones Ciclofox</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         background: #f5f5f7; color: #1d1d1f; padding: 20px; }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { color: #86868b; font-size: 13px; margin-bottom: 16px; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+  .card { background: #fff; border-radius: 12px; padding: 12px 16px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  .card .n { font-size: 22px; font-weight: 700; }
+  .card .l { font-size: 12px; color: #86868b; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden;
+          box-shadow: 0 1px 3px rgba(0,0,0,.06); font-size: 13px; }
+  th { text-align: left; padding: 8px 12px; background: #e0e0e0; font-size: 11px; text-transform: uppercase;
+       letter-spacing: .03em; cursor: pointer; user-select: none; white-space: nowrap; }
+  th:hover { background: #d0d0d0; }
+  th .arr { margin-left: 4px; opacity: .4; }
+  th.asc .arr::after { content: '▲'; }
+  th.desc .arr::after { content: '▼'; }
+  th:not(.asc):not(.desc) .arr::after { content: '⇅'; }
+  td { padding: 8px 12px; border-bottom: 1px solid #f0f0f2; }
+  td.mod { font-weight: 600; }
+  td.si a { color: #1d1d1f; text-decoration: none; font-weight: 600; }
+  td.si a:hover { text-decoration: underline; }
+  td.no { color: #c4c4c8; text-align: center; }
+  .cnt { font-size: 10px; color: #86868b; }
+  td.est { font-size: 11px; font-weight: 600; }
+  tr.solo-p { background: #fff8e1; }
+  tr.solo-q { background: #eef7ff; }
+  tr.solo-p td.est { color: #b8860b; }
+  tr.solo-q td.est { color: #0066cc; }
+  .otros { margin-top: 18px; font-size: 12px; color: #555; }
+  .otros ul { margin: 4px 0 0 18px; }
+</style></head><body><div class="wrap">
+  <div class="sub">En el listado se pueden ver los modelos publicados y quién los tiene publicados (Pueyrredón, Pacheco o Ambos).</div>
+  <div class="cards">
+    <div class="card"><div class="n">15</div><div class="l">Pubs Pacheco</div></div>
+    <div class="card"><div class="n">38</div><div class="l">Pubs Pueyrredón</div></div>
+    <div class="card"><div class="n">14</div><div class="l">Modelos en ambas</div></div>
+    <div class="card"><div class="n">0</div><div class="l">Solo Pacheco</div></div>
+    <div class="card"><div class="n">11</div><div class="l">Solo Pueyrredón</div></div>
+  </div>
+  <table id="tbl">
+    <thead><tr>
+      <th style="width:36px;text-align:center">#</th>
+      <th onclick="sortBy(1)">Modelo<span class="arr"></span></th>
+      <th onclick="sortBy(2)">Pacheco<span class="arr"></span></th>
+      <th onclick="sortBy(3)">Pueyrredón<span class="arr"></span></th>
+      <th onclick="sortBy(4)">Estado<span class="arr"></span></th>
+    </tr></thead>
+    <tbody><tr class="solo-q"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Gaf GX 70</td><td class="no">—</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1517175433-gaf-gx-70c-y-140c-0km-minimoto-enduro-mini-cross-ciclofox-_JM" target="_blank">$2.400.000</a></td><td class="est">Solo Pueyrredón</td></tr><tr class="ambas"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Hero Hunk 150</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3499050578-hero-hunk-150-0km-2026-no-raider-rouser-ns-ciclofox-pacheco-_JM" target="_blank">$2.990.000</a></td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3505163010-hero-hunk-150-0km-2026-no-raider-rouser-ns-ciclofox-motos-_JM" target="_blank">$2.990.000</a> <span class="cnt">x2</span></td><td class="est">Ambas</td></tr><tr class="solo-q"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Hero Xpulse 200</td><td class="no">—</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1729292699-hero-xpulse-200-2026-abs-no-zr-triax-xr-xtz-0km-ciclofox-_JM" target="_blank">$3.699.000</a></td><td class="est">Solo Pueyrredón</td></tr><tr class="ambas"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Motomel Blitz 110 Full</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3506855170-motomel-blitz-110-no-wave-zb-smash-ciclofox-pacheco-_JM" target="_blank">$1.649.000</a></td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3452436642-motomel-blitz-110-2026-disco-0km-no-keller-zb-smash-ciclofox-_JM" target="_blank">$1.399.000</a></td><td class="est">Ambas</td></tr><tr class="ambas"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Motomel CG S2 150 Full</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3503940458-motomel-cg-s2-150-no-rx-boxer-150-vc-keller-ciclofox-pacheco-_JM" target="_blank">$2.090.000</a></td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3516003510-motomel-cg-s2-150-no-rx-boxer-150-vc-keller-ciclofox-motos-_JM" target="_blank">$2.090.000</a> <span class="cnt">x2</span></td><td class="est">Ambas</td></tr><tr class="solo-q"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Motomel Skua 150</td><td class="no">—</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3457926946-motomel-skua-150-no-keller-triax-entrega-inmediata-ciclofox-_JM" target="_blank">$2.700.000</a></td><td class="est">Solo Pueyrredón</td></tr><tr class="solo-q"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Motomel Skua 250</td><td class="no">—</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1856661665-motomel-skua-250-0km-no-150-xtz-shael-nomad-ciclofox-motos-_JM" target="_blank">$3.490.000</a></td><td class="est">Solo Pueyrredón</td></tr><tr class="ambas"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Siam Nomad 150</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1849157837-siam-nomad-150-2026-no-zr-zt-xr-xtz-financia-dni-o-tarjeta-_JM" target="_blank">$3.050.000</a></td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1788485131-siam-nomad-150-2026-entrega-inmediata-no-zr-zt-skua-ciclofox-_JM" target="_blank">$3.050.000</a></td><td class="est">Ambas</td></tr><tr class="solo-q"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Siam Qu110 Full</td><td class="no">—</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1852130907-siam-qu-full-110-0km-2026-no-smash-blitz-ciclofox-_JM" target="_blank">$1.499.000</a> <span class="cnt">x2</span></td><td class="est">Solo Pueyrredón</td></tr><tr class="ambas"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Siam Trender 150</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1849179821-siam-trender-150-sapucai-financia-con-tarjeta-y-dni-pacheco-_JM" target="_blank">$1.950.000</a></td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3514600902-siam-trender-150-0km-no-quirion-qu-sapucai-victory-ciclofox-_JM" target="_blank">$1.890.000</a></td><td class="est">Ambas</td></tr><tr class="solo-q"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Siam Twin Roads</td><td class="no">—</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3223403336-siam-twin-roads-v250-0km-no-patagonia-ac4-ciclofox-motos-_JM" target="_blank">$6.450.000</a></td><td class="est">Solo Pueyrredón</td></tr><tr class="solo-q"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">TVS RTR 200</td><td class="no">—</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1852026575-tvs-rtr-200-con-abs-0km-2026-ciclofox-no-ns-160-200-40-_JM" target="_blank">$4.499.000</a></td><td class="est">Solo Pueyrredón</td></tr><tr class="ambas"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">TVS Raider 125</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3498465838-tvs-raider-125-0km-2026-no-bajajp150-ybrfinancia-1oo-dni-_JM" target="_blank">$2.999.000</a></td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1854223447-tvs-raider-125-no-ls-125-ybr-125-fz-16-glh-150-ciclofox-_JM" target="_blank">$2.999.000</a></td><td class="est">Ambas</td></tr><tr class="ambas"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Yamaha FZ 25</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3494693494-yamaha-fz-25-0km-fz-fzx-tarjeta-credito-pregunta-efectivo-_JM" target="_blank">$7.599.000</a></td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1850605841-yamaha-fz25-fz-25-fz-16-v30-fz-x-v40-ciclofox-motos-_JM" target="_blank">$7.599.000</a> <span class="cnt">x2</span></td><td class="est">Ambas</td></tr><tr class="ambas"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Yamaha FZ 4.0</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1853127787-yamaha-fz-40-v40-0km-2026-pregunta-por-contado-entrega-hoy-_JM" target="_blank">$5.499.000</a></td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1854219067-yamaha-fz-40-2026-fzx-fz-150-fz-fi-v3-v40-25-ciclofox-0km-_JM" target="_blank">$5.499.000</a> <span class="cnt">x2</span></td><td class="est">Ambas</td></tr><tr class="ambas"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Yamaha FZ-X</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3488293672-yamaha-fz-x-0km-fz-fz-25-con-tarjeta-credito-dni-prendario-_JM" target="_blank">$5.700.000</a></td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1812593551-yamaha-fz-x-2026-fzx-fz-150-fz-fi-v3-v40-25-ciclofox-0km-_JM" target="_blank">$5.499.999</a></td><td class="est">Ambas</td></tr><tr class="ambas"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Yamaha Fascino</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1846267763-yamaha-fascino-125-0km-2026-financiacion-entrega-inmediata-_JM" target="_blank">$4.150.000</a></td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1854519505-yamaha-fascino-125-0km-2026-en-cuotas-ciclofox-ray-nmax--_JM" target="_blank">$4.150.000</a></td><td class="est">Ambas</td></tr><tr class="ambas"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Yamaha MT 03</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1848134715-moto-yamaha-mt-03-abs-2026-mt03-naked-0km-ciclofox-pacheco-_JM" target="_blank">$11.800.000</a></td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1852341601-yamaha-mt-03-abs-2026-mt03-mt-03-naked-0km-ciclofox-_JM" target="_blank">$11.800.000</a> <span class="cnt">x2</span></td><td class="est">Ambas</td></tr><tr class="solo-q"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Yamaha MT 09</td><td class="no">—</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3517176104-yamaha-mt09-mt-09-mt-07-r7-t700-0km-2026-unica-ciclofox-caba-_JM" target="_blank">$15.600</a> <span class="cnt">x2</span></td><td class="est">Solo Pueyrredón</td></tr><tr class="ambas"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Yamaha Nmax</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3500946588-yamaha-nmax-155-nmx-2026-no-ray-fascino-0km-ciclofox-pacheco-_JM" target="_blank">$7.850.000</a></td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1852399363-yamaha-nmax-155-nmx-2026-no-ray-fascino-ciclofox-motos-0km-_JM" target="_blank">$7.850.000</a></td><td class="est">Ambas</td></tr><tr class="ambas"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Yamaha Ray 125</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3506928216-yamaha-ray-125-zr-fi-2026-no-fascino-ciclofox-pacheco-_JM" target="_blank">$4.300.000</a></td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1855547387-yamaha-ray-125-fi-2026-no-fascino-ciclofox-moto-0km-_JM" target="_blank">$4.300.000</a> <span class="cnt">x3</span></td><td class="est">Ambas</td></tr><tr class="solo-q"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Yamaha TTR 230</td><td class="no">—</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1794888121-yamaha-ttr-230-2026-0km-cuotas-sin-interes-ciclofox-_JM" target="_blank">$7.950.000</a> <span class="cnt">x2</span></td><td class="est">Solo Pueyrredón</td></tr><tr class="solo-q"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Yamaha Tenere 700</td><td class="no">—</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3500928348-yamaha-tenere-700-0km-2026-rally-entrega-inmediata-ciclofox-_JM" target="_blank">$19.950</a></td><td class="est">Solo Pueyrredón</td></tr><tr class="ambas"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Yamaha XTZ 250</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1847145607-yamaha-xtz-125-0km-xtz-con-tarjeta-credito-dni-prendario-_JM" target="_blank">$5.399.000</a> <span class="cnt">x2</span></td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-3517171288-yamaha-xtz-250-abs-0km-2026-entrega-hoy-ciclofox-credito-dni-_JM" target="_blank">$5.399.000</a> <span class="cnt">x3</span></td><td class="est">Ambas</td></tr><tr class="solo-q"><td class="num" style="text-align:center;color:#86868b;font-size:11px"></td><td class="mod">Yamaha Xmax 300</td><td class="no">—</td><td class="si"><a href="https://moto.mercadolibre.com.ar/MLA-1775519175-yamaha-xmax-300-2026-en-ciclofox-no-368g-kymco-sym-_JM" target="_blank">$9.900</a></td><td class="est">Solo Pueyrredón</td></tr></tbody>
+  </table>
+  <div class='otros'><b>Sin clasificar — Pueyrredon:</b><ul><li><a href='https://moto.mercadolibre.com.ar/MLA-3342672240-bmw-g-310r-permuta-usado-seleccionado-ciclofox-motos-_JM' target='_blank'>Bmw G 310r Permuta Usado Seleccionado Ciclofox Motos</a></li></ul></div>
+<script>
+var _col = -1, _asc = true;
+function renumber() {
+  var rows = document.getElementById('tbl').tBodies[0].rows;
+  for (var i = 0; i < rows.length; i++) rows[i].cells[0].textContent = i + 1;
+}
+function sortBy(col) {
+  var tbl = document.getElementById('tbl');
+  var ths = tbl.querySelectorAll('th');
+  if (_col === col) _asc = !_asc; else { _col = col; _asc = true; }
+  ths.forEach(function(th, i) { th.classList.remove('asc','desc'); if (i===col) th.classList.add(_asc?'asc':'desc'); });
+  var tb = tbl.tBodies[0];
+  var rows = Array.from(tb.rows);
+  rows.sort(function(a, b) {
+    var va = a.cells[col].innerText.trim().toLowerCase();
+    var vb = b.cells[col].innerText.trim().toLowerCase();
+    var na = parseFloat(va.replace(/[^0-9.]/g,''));
+    var nb = parseFloat(vb.replace(/[^0-9.]/g,''));
+    var cmp = (!isNaN(na) && !isNaN(nb)) ? na - nb : va.localeCompare(vb, 'es');
+    return _asc ? cmp : -cmp;
+  });
+  rows.forEach(function(r) { tb.appendChild(r); });
+  renumber();
+}
+renumber();
+</script>
+</div></body></html>

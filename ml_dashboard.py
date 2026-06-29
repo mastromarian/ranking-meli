@@ -24,6 +24,8 @@ import io
 import re
 import time
 import json
+import urllib.request
+import urllib.parse
 from datetime import datetime
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -40,23 +42,42 @@ from webdriver_manager.chrome import ChromeDriverManager
 MODELOS = [
     # Yamaha
     "yamaha mt 03",
+    "yamaha mt 07",
+    "yamaha mt 09",
     "yamaha nmax",
     "yamaha fz 4.0",
     "yamaha fz 25",
     "yamaha fz-x",
     "yamaha xtz 125",
     "yamaha xtz 250",
+    "yamaha xmax 300",
     "yamaha ray 125",
     "yamaha fascino",
     "yamaha ttr 230",
+    "yamaha tenere 700",
     # Hero
     "hero hunk 150",
+    "hero xpulse 200",
+    # Motomel
+    "motomel skua 150",
+    "motomel skua 250",
+    "motomel blitz 110",
+    "motomel blitz 110 full",
+    "motomel cg s2 150",
+    "motomel cg s2 150 full",
     # Siam
     "siam qu110",
+    "siam qu110 full",
     "siam trender 150",
     "siam nomad 150",
+    "siam twin roads",
     # TVS
     "tvs raider 125",
+    "tvs rtr 200",
+    # Ika
+    "ika durban",
+    # Gaf
+    "gaf gx 70",
 ]
 
 # Tu cuenta (para resaltarla en el dashboard)
@@ -93,12 +114,13 @@ def get_driver(use_profile: bool = False):
     options.add_experimental_option("useAutomationExtension", False)
     options.add_argument(
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
     )
     if use_profile:
-        # Usa tu perfil real de Chrome (logueado, con ubicacion) -> ML sirve los ads
-        # IMPORTANTE: cerra Chrome antes de correr con --profile
-        profile_dir = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data")
+        # Perfil DEDICADO del scraper (no el de Chrome de todos los dias).
+        # Logueate en ML una sola vez con --login; la sesion queda guardada aca.
+        # Asi nunca choca con tu Chrome abierto.
+        profile_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chrome_profile")
         options.add_argument(f"--user-data-dir={profile_dir}")
         options.add_argument("--profile-directory=Default")
 
@@ -169,6 +191,19 @@ def scrape_modelo(driver, query: str, top_n: int = 20):
     soup = BeautifulSoup(driver.page_source, "html.parser")
     items = soup.select(".ui-search-layout__item")
 
+    # Titulos de publicaciones que estan corriendo Ads. ML las muestra en bloques
+    # patrocinados (fuera de ui-search-layout__item) con un span "Ad" y un link de
+    # tracking SIN MLA-id, pero la misma publicacion aparece en el listado organico.
+    # Como no hay id, matcheamos por titulo normalizado.
+    def _norm(t):
+        return re.sub(r"[^a-z0-9]", "", (t or "").lower())
+    ad_titles = set()
+    for adspan in soup.select(".poly-component__ads-promotions"):
+        li = adspan.find_parent("li")
+        t = li.select_one(".poly-component__title") if li else None
+        if t:
+            ad_titles.add(_norm(t.get_text(strip=True)))
+
     results = []
     for idx, item in enumerate(items[:top_n], 1):
         title_el = item.select_one(".poly-component__title")
@@ -191,8 +226,10 @@ def scrape_modelo(driver, query: str, top_n: int = 20):
         seller_el = item.select_one(".poly-component__seller")
         seller_listado = seller_el.get_text(strip=True) if seller_el else ""
 
-        is_ad = "is_advertising=true" in (link_el["href"] if link_el else "") or \
-                bool(item.select_one('[class*="advertising"]'))
+        # Marca isAd si esta publicacion aparece en el bloque patrocinado (match por titulo)
+        is_ad = bool(item.select_one(".poly-component__ads-promotions")) or \
+                (_norm(title) in ad_titles) or \
+                "is_advertising=true" in (link_el["href"] if link_el else "")
 
         results.append({
             "title": title,
@@ -220,11 +257,134 @@ def scrape_modelo(driver, query: str, top_n: int = 20):
         else:
             r["seller"] = name or "(no visible)"
 
-    # Asignar rank limpio
-    for rank, r in enumerate(results, 1):
-        r["rank"] = rank
+    # Asignar rank limpio: los Ads NO ocupan puesto en el ranking, pero quedan
+    # en el listado en el orden en que se encontraron (rank = None).
+    rank = 0
+    for r in results:
+        if r.get("isAd"):
+            r["rank"] = None
+        else:
+            rank += 1
+            r["rank"] = rank
 
     return url, results, visitas
+
+
+# ───────────────────────── SCRAPER VIA API DE LA APP ─────────────────────────
+def load_app_session():
+    """Carga el token/headers capturados de la app de Mercado Libre."""
+    try:
+        with open("app_session.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def _app_headers(sess: dict) -> dict:
+    return {
+        "Authorization": "Bearer " + sess["token"],
+        "x-meli-session-id": sess.get("session_id", ""),
+        "x-d2id": sess.get("d2id", ""),
+        "x-client-info": sess.get("client_info", ""),
+        "User-Agent": sess.get("user_agent", "MercadoLibre-iOS/10.545.5"),
+        "x-app-version": sess.get("app_version", ""),
+        "x-polycard-lib": sess.get("polycard_lib", ""),
+        "x-polycard-contract": sess.get("polycard_contract", ""),
+        "x-card-type": "polycard",
+        "accept-language": "es-AR",
+        "Accept": "*/*",
+    }
+
+
+def _poly_field(comps, ctype):
+    for c in comps:
+        if isinstance(c, dict) and c.get("type") == ctype:
+            return c
+    return None
+
+
+def scrape_modelo_app(query: str, sess: dict, top_n: int = 20):
+    """Consulta el mismo endpoint que usa la app de ML y devuelve las filas
+    en el orden REAL de la app. Devuelve (rows, ok)."""
+    params = {
+        "q": query, "pure_query": "true", "limit": "20", "offset": "0",
+        "layout": "list", "zipcode": sess.get("zipcode", "1427"),
+        "lat": sess.get("lat", ""), "lon": sess.get("lon", ""),
+        "action": "zero", "retailer": "secondary", "mclicsOn": "true",
+        "all_mercadolibre": "True", "sb": "all_mercadolibre",
+    }
+    url = "https://frontend.mercadolibre.com/sites/MLA/search?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers=_app_headers(sess))
+    with urllib.request.urlopen(req, timeout=25) as r:
+        data = json.load(r)
+
+    polys = [c["polycard"] for c in data.get("components", [])
+             if isinstance(c, dict) and "polycard" in c]
+    results = []
+    for pc in polys[:top_n]:
+        meta = pc.get("metadata", {})
+        comps = pc.get("components", [])
+        tc = _poly_field(comps, "title")
+        title = (tc.get("title", {}).get("text", "") if tc and isinstance(tc.get("title"), dict) else "")
+        pcp = _poly_field(comps, "price")
+        price_num = 0
+        if pcp:
+            price_num = int(pcp.get("price", {}).get("current_price", {}).get("value", 0) or 0)
+        lc = _poly_field(comps, "location")
+        location = lc.get("location", {}).get("text", "") if lc else ""
+        ac = _poly_field(comps, "attributes_list")
+        attrs = ac.get("attributes_list", {}).get("texts", []) if ac else []
+        is_0km = any(str(a).strip().lower() == "0 km" for a in attrs)
+        is_ad = "is_advertising=true" in meta.get("url_fragments", "")
+        mid = meta.get("id", "")
+        link = f"https://articulo.mercadolibre.com.ar/{mid[:3]}-{mid[3:]}-_JM" if mid else ""
+        results.append({
+            "title": title,
+            "price_raw": "$" + f"{price_num:,}".replace(",", ".") if price_num else "",
+            "price_num": price_num,
+            "location": location,
+            "is_0km": is_0km,
+            "seller_listado": "",
+            "seller": "",
+            "isAd": is_ad,
+            "link": link,
+            "mla": mid,
+        })
+
+    # Filtrar 0km
+    results = [r for r in results if r["is_0km"]]
+    # Resolver vendedor por titulo/ubicacion (sin visitar)
+    for r in results:
+        name, _ = resolve_seller(r["title"], r["location"], "")
+        r["seller"] = name or "(no visible)"
+    # Rank: ads sin puesto
+    rank = 0
+    for r in results:
+        if r.get("isAd"):
+            r["rank"] = None
+        else:
+            rank += 1
+            r["rank"] = rank
+    return results, True
+
+
+def _mla_of(link_or_id: str) -> str:
+    m = re.search(r"MLA-?(\d+)", link_or_id or "")
+    return m.group(1) if m else ""
+
+
+def enrich_app_sellers(rows_web: list, rows_app: list):
+    """Copia el vendedor ya resuelto del scrape web a las filas de la app,
+    matcheando por MLA-id. Lo que no matchea queda como lo dejo resolve_seller."""
+    web_by_mla = {}
+    for r in rows_web or []:
+        mla = _mla_of(r.get("link", ""))
+        if mla and r.get("seller") and r["seller"] != "(no visible)":
+            web_by_mla[mla] = r["seller"]
+    for r in rows_app or []:
+        mla = _mla_of(r.get("mla") or r.get("link", ""))
+        if mla in web_by_mla:
+            r["seller"] = web_by_mla[mla]
 
 
 def normalize_seller(s: str) -> str:
@@ -265,7 +425,7 @@ def regenerar_html():
 def main(modelos: list, use_profile: bool = False):
     print(f"\nScrapeando {len(modelos)} modelos...")
     if use_profile:
-        print(">> Modo perfil: usando tu Chrome real (cerra Chrome antes). Captura ads.\n")
+        print(">> Modo perfil: usando perfil dedicado (chrome_profile) con tu sesion ML.\n")
     else:
         print()
     driver = get_driver(use_profile=use_profile)
@@ -300,15 +460,49 @@ def main(modelos: list, use_profile: bool = False):
         except Exception:
             pass
 
+    # Pasada por la API de la app (ranking REAL de la app de ML)
+    app_sess = load_app_session()
+    if app_sess and app_sess.get("token"):
+        print("\nScrapeando ranking de la APP (API)...")
+        for i, modelo in enumerate(modelos, 1):
+            if modelo not in data:
+                continue
+            try:
+                rows_app, _ = scrape_modelo_app(modelo, app_sess)
+                enrich_app_sellers(data[modelo].get("rows", []), rows_app)
+                data[modelo]["rows_app"] = rows_app
+                print(f"  [{i}/{len(modelos)}] {modelo}... OK ({len(rows_app)} app)")
+            except Exception as e:
+                msg = str(e).split("\n")[0][:70]
+                print(f"  [{i}/{len(modelos)}] {modelo}... ERROR app: {msg}")
+                data[modelo]["rows_app"] = []
+            time.sleep(0.4)
+    else:
+        print("\n(Sin app_session.json valido: se omite el ranking de la app)")
+
+    # Mergear con lo que ya habia: reemplaza/agrega los modelos scrapeados,
+    # mantiene el resto intacto. Asi correr 1 modelo no borra los demas.
+    modelos_merged = data
+    try:
+        with open("ml_data.json", "r", encoding="utf-8") as f:
+            prev = json.load(f)
+        modelos_merged = dict(prev.get("modelos", {}))
+        modelos_merged.update(data)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
     payload = {
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "mi_cuenta": MI_CUENTA,
-        "modelos": data,
+        "modelos": modelos_merged,
     }
 
     with open("ml_data.json", "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    print("\nDatos guardados en ml_data.json")
+    print(f"\nDatos guardados en ml_data.json ({len(data)} scrapeados, {len(modelos_merged)} totales)")
+
+    record_history(payload)
+    print("Historial de ranking actualizado en ml_history.json")
 
     html = build_html(payload)
     os.makedirs("public", exist_ok=True)
@@ -319,9 +513,60 @@ def main(modelos: list, use_profile: bool = False):
     print("\nAbri ml_ranking.html en tu navegador.\n")
 
 
+HISTORY_PATH = "ml_history.json"
+
+
+def record_history(payload: dict, path: str = HISTORY_PATH):
+    """Guarda un snapshot del mejor rank por vendedor/modelo (web y app) con fecha.
+    Series: hist['series'][vendedor][modelo] = [[fecha, rank_web, rank_app], ...]"""
+    date = payload.get("generated")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            hist = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        hist = {"series": {}}
+    series = hist.setdefault("series", {})
+    for modelo, o in payload.get("modelos", {}).items():
+        best = {}  # seller -> [web, app]
+        for r in o.get("rows", []):
+            s, rk = r.get("seller"), r.get("rank")
+            if not s or rk is None:
+                continue
+            best.setdefault(s, [None, None])
+            if best[s][0] is None or rk < best[s][0]:
+                best[s][0] = rk
+        for r in o.get("rows_app", []):
+            s, rk = r.get("seller"), r.get("rank")
+            if not s or rk is None:
+                continue
+            best.setdefault(s, [None, None])
+            if best[s][1] is None or rk < best[s][1]:
+                best[s][1] = rk
+        for s, (w, a) in best.items():
+            arr = series.setdefault(s, {}).setdefault(modelo, [])
+            if arr and arr[-1][0] == date:
+                arr[-1] = [date, w, a]   # reemplaza si ya hay snapshot de esa fecha
+            else:
+                arr.append([date, w, a])
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(hist, f, ensure_ascii=False, indent=1)
+    return hist
+
+
+def _load_history(path: str = HISTORY_PATH):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"series": {}}
+
+
 def build_html(payload: dict) -> str:
     data_json = json.dumps(payload, ensure_ascii=False)
-    return HTML_TEMPLATE.replace("__DATA__", data_json)
+    hist_json = json.dumps(_load_history(), ensure_ascii=False)
+    html = HTML_TEMPLATE.replace("__DATA__", data_json)
+    html = html.replace("__HISTORY__", hist_json)
+    return html
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -329,99 +574,262 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ML Ranking Dashboard</title>
+<title>Mercado Libre - Posicionamiento</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
          background: #f5f5f7; color: #1d1d1f; padding: 20px; }
   .container { max-width: 1200px; margin: 0 auto; }
-  h1 { font-size: 28px; margin-bottom: 4px; }
-  .meta { color: #86868b; font-size: 13px; margin-bottom: 20px; }
+  .header-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  h1 { font-size: 20px; margin: 0; }
+  .nav-tabs { display: inline-flex; background: #e8e8ed; border-radius: 10px; padding: 3px; gap: 3px; }
+  .nav-btn { border: none; background: transparent; padding: 7px 18px; border-radius: 8px; font-size: 14px;
+    font-weight: 600; color: #6e6e73; cursor: pointer; font-family: inherit; transition: all .15s; }
+  .nav-btn:hover { color: #1d1d1f; }
+  .nav-btn.active { background: #fff; color: #1d1d1f; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .meta { color: #86868b; font-size: 12px; margin-bottom: 0; }
   .update-banner {
-    display: flex; align-items: center; gap: 14px;
-    padding: 18px 24px; border-radius: 14px; margin-bottom: 22px;
-    font-size: 20px; font-weight: 700; border: 2px solid;
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 14px; border-radius: 10px;
+    font-size: 13px; font-weight: 600; border: 1.5px solid;
   }
-  .update-banner .ub-icon { font-size: 30px; }
-  .update-banner .ub-sub { font-size: 13px; font-weight: 500; opacity: .8; }
+  .update-banner .ub-icon { font-size: 16px; }
   .ub-fresh { background: #e9f9ee; color: #137a36; border-color: #34c759; }
   .ub-mid   { background: #fff8e6; color: #8a6d00; border-color: #ffcc00; }
   .ub-stale { background: #fdeaea; color: #b3000f; border-color: #ff3b30; }
-  .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
-  .tab { padding: 10px 20px; background: #fff; border: 1px solid #d2d2d7; border-radius: 10px;
-         cursor: pointer; font-size: 15px; font-weight: 500; transition: all .15s; }
-  .tab:hover { background: #f0f0f2; }
+  .panel { display: flex; gap: 16px; margin-bottom: 20px; }
+  .panel-left { flex: 1; padding: 0 24px 8px 24px; background: #fff; border-radius: 14px;
+                box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  .panel-right { flex: 1; padding: 0 24px 8px 24px; background: #fff; border-radius: 14px;
+                 box-shadow: 0 1px 3px rgba(0,0,0,.06); display: flex; flex-direction: column; }
+  .panel-title { font-size: 13px; font-weight: 700; color: #1d1d1f; background: #e0e0e0; padding: 6px 24px;
+                 margin: 0 -24px 10px -24px; border-radius: 14px 14px 0 0; }
+  .subhead { font-size: 11px; font-weight: 700; color: #86868b; text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px; }
+  .tabs { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .tabs-label { font-size: 15px; font-weight: 700; color: #1d1d1f; margin-right: 8px; }
+  .tab { padding: 4px 12px; background: #f5f5f7; border: 1px solid #d2d2d7; border-radius: 8px;
+         cursor: pointer; font-size: 12px; font-weight: 500; transition: all .15s; }
+  .tab:hover { background: #e8e8ed; }
   .tab.active { background: #0071e3; color: #fff; border-color: #0071e3; }
-  .controls { margin-bottom: 16px; }
-  select { padding: 10px 14px; font-size: 15px; border: 1px solid #d2d2d7; border-radius: 10px;
-           background: #fff; min-width: 260px; cursor: pointer; }
-  .card { background: #fff; border-radius: 14px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.06);
-          margin-bottom: 16px; }
+  .controls { display: flex; flex-direction: column; align-items: stretch; gap: 4px; width: 100%; }
+  .controls > div, .controls > span { display: flex; align-items: center; gap: 8px; width: 100%; }
+  .controls-label { font-size: 12px; font-weight: 600; color: #1d1d1f; white-space: nowrap; }
+  select { padding: 5px 10px; font-size: 12px; border: 1px solid #d2d2d7; border-radius: 8px;
+           background: #fff; flex: 1; min-width: 0; cursor: pointer; }
+  .card { background: #fff; border-radius: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.06);
+          margin-bottom: 16px; max-height: 375px; overflow-y: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th { text-align: left; padding: 10px 12px; border-bottom: 2px solid #e8e8ed; color: #6e6e73;
-       font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
-  td { padding: 11px 12px; border-bottom: 1px solid #f0f0f2; }
+  th { text-align: left; padding: 5px 12px; border-bottom: 2px solid #e8e8ed; color: #1d1d1f;
+       font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .03em;
+       position: sticky; top: 0; background: #e0e0e0; z-index: 1; }
+  #tbl-vendedor th { cursor: pointer; user-select: none; }
+  #tbl-vendedor th:hover { background: #d0d0d0; }
+  #tbl-vendedor th .sort-arrow { font-size: 10px; margin-left: 4px; }
+  td { padding: 6px 12px; border-bottom: 1px solid #f0f0f2; }
   tr:hover td { background: #fafafa; }
-  .rank { font-weight: 700; color: #0071e3; width: 40px; }
+  .rank { color: #1d1d1f; width: 40px; }
   .ads { text-align: center; width: 50px; }
   .price { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px;
            font-weight: 600; }
   .badge-ad { background: #fff3cd; color: #856404; }
   .badge-plan { background: #e7f3ff; color: #0071e3; }
-  .mine { background: #fff0f0 !important; }
-  .mine td { font-weight: 600; }
-  .mine .rank { color: #e3000f; }
-  .tag-mine { background: #ffe0e0; color: #e3000f; }
-  .puey { background: #eef7ff !important; }
-  .puey td { font-weight: 600; }
-  .puey .rank { color: #0066cc; }
-  .seller-link { color: #0071e3; cursor: pointer; text-decoration: none; }
+  /* Tooltip propio (info "i") */
+  .tip { position: relative; display: inline-block; cursor: help; }
+  .tip-i { display: inline-block; width: 15px; height: 15px; line-height: 15px; text-align: center;
+           border-radius: 50%; background: #86868b; color: #fff; font-size: 10px; font-weight: 700;
+           font-style: italic; vertical-align: middle; }
+  .tip-box { display: none; position: absolute; top: 130%; left: 0; z-index: 1000;
+             background: #1d1d1f; color: #fff; padding: 12px 14px; border-radius: 8px;
+             font-size: 12.5px; font-weight: 400; line-height: 1.6; white-space: pre-line;
+             width: 440px; max-width: 80vw; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+  .tip:hover .tip-box, .tip.pinned .tip-box { display: block; }
+  .tip-box--sm { width: 280px; font-style: normal; }
+  /* Vista Moto: Pacheco amarillo, Pueyrredon azul */
+  #tbl-moto .mine { background: #fff8e1 !important; }
+  #tbl-moto .mine td { font-weight: 600; }
+  #tbl-moto .mine .rank { color: #b8860b; }
+  #tbl-moto .puey { background: #eef7ff !important; }
+  #tbl-moto .puey td { font-weight: 600; }
+  #tbl-moto .puey .rank { color: #0066cc; }
+  /* Vista Concesionaria: todo lo resaltado en rojo (logica = mal rank) */
+  #tbl-vendedor .mine, #tbl-vendedor .puey { background: #fff0f0 !important; }
+  #tbl-vendedor .mine td, #tbl-vendedor .puey td { font-weight: 600; }
+  #tbl-vendedor .mine .rank, #tbl-vendedor .puey .rank { color: #e3000f; }
+  .seller-link { color: #1d1d1f; cursor: pointer; text-decoration: none; }
   .seller-link:hover { text-decoration: underline; }
-  .summary { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
-  .stat { background: #fff; border-radius: 12px; padding: 14px 20px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
-  .stat .num { font-size: 26px; font-weight: 700; }
-  .stat .lbl { font-size: 12px; color: #86868b; }
+  .seller-link:hover { text-decoration: underline; }
+  .summary { display: flex; flex-direction: column; gap: 6px; }
+  .stat { display: flex; align-items: baseline; gap: 8px; }
+  .stat .num { font-size: 18px; font-weight: 700; min-width: 45px; text-align: right; }
+  .stat .lbl { font-size: 12px; color: #555; white-space: nowrap; }
   .hidden { display: none; }
   a.pub { color: #1d1d1f; text-decoration: none; }
   a.pub:hover { color: #0071e3; text-decoration: underline; }
+  body.readonly .rank-col { visibility: hidden; }
+  #user-chip { display: flex; align-items: center; justify-content: flex-end; gap: 8px; font-size: 12px; color: #555; padding: 6px 0; }
+  #user-chip button { background: none; border: 1px solid #ccc; border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; color: #555; }
+  #user-chip button:hover { background: #f0f0f0; }
+  #user-chip .role-badge { font-weight:700; padding:2px 8px; border-radius:999px; font-size:11px; letter-spacing:.5px; }
+  #user-chip .role-admin { background:#dcfce7; color:#166534; }
+  #user-chip .role-lectura { background:#e2e8f0; color:#475569; }
 </style>
 </head>
 <body>
-<div class="container">
-  <h1>🏍️ ML Ranking Dashboard</h1>
-  <div class="update-banner" id="update-banner"></div>
 
-  <div class="tabs">
-    <div class="tab active" data-view="moto" onclick="setView('moto')">Por Moto</div>
-    <div class="tab" data-view="vendedor" onclick="setView('vendedor')">Por Vendedor</div>
+<!-- Supabase client (CDN) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  const SUPABASE_URL  = 'https://cazdzwigtazmecixhuiw.supabase.co';
+  const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhemR6d2lndGF6bWVjaXhodWl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE5ODQ3OTQsImV4cCI6MjA5NzU2MDc5NH0.gDpzVh5apPBpDujdRN8olJk93FxULHCrS49XOVxGwvU';
+  let sb = null;
+  try { sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON, { auth: { persistSession: true, autoRefreshToken: true } }); }
+  catch (e) { console.warn('Supabase no configurado:', e.message); }
+</script>
+
+<!-- Pantalla de login -->
+<div id="auth-gate" style="position:fixed;inset:0;z-index:99999;background:#f5f5f7;display:flex;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;padding:30px 28px;border-radius:14px;width:340px;max-width:100%;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.12);border-top:4px solid #0071e3;">
+    <div style="font-weight:800;font-size:17px;margin-bottom:4px;color:#1d1d1f;">Monitor de Posicionamiento</div>
+    <div id="auth-sub" style="font-size:13px;color:#86868b;margin-bottom:18px;">Verificando sesión…</div>
+    <div id="auth-form" style="display:none;">
+      <input id="auth-email" type="email" placeholder="Email" autocomplete="username"
+        style="width:100%;margin-bottom:8px;padding:11px 14px;border:1.5px solid #e8e8ed;border-radius:8px;font-size:15px;outline:none;font-family:inherit;"
+        onkeydown="if(event.key==='Enter')document.getElementById('auth-pass').focus()">
+      <input id="auth-pass" type="password" placeholder="Contraseña" autocomplete="current-password"
+        style="width:100%;padding:11px 14px;border:1.5px solid #e8e8ed;border-radius:8px;font-size:15px;outline:none;font-family:inherit;"
+        onkeydown="if(event.key==='Enter')doLogin()">
+      <div id="auth-err" style="color:#e3000f;font-size:12px;font-weight:600;height:16px;margin-top:8px;"></div>
+      <button id="auth-btn" onclick="doLogin()"
+        style="width:100%;margin-top:10px;padding:11px;background:#0071e3;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">
+        Entrar
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="container" id="main-app" style="display:none">
+  <div id="user-chip"></div>
+  <div class="header-row">
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <img src="https://http2.mlstatic.com/frontend-assets/ml-web-navigation/ui-navigation/6.6.92/mercadolibre/logo_large_25years@2x.png" alt="Mercado Libre" style="height:24px">
+      <div class="nav-tabs">
+        <button id="nav-ranking" class="nav-btn active" onclick="showSection('ranking')">Ranking</button>
+        <button id="nav-comparador" class="nav-btn" onclick="showSection('comparador')">Comparador</button>
+      </div>
+    </div>
+    <div class="update-banner" id="update-banner"></div>
+  </div>
+
+  <div id="ranking-view">
+  <div class="panel">
+    <div class="panel-left">
+      <div class="panel-title">Búsqueda</div>
+      <div style="display:flex;gap:24px;align-items:stretch">
+        <!-- IZQUIERDA: Visualización -->
+        <div style="flex:1;min-width:0">
+          <div class="subhead">Visualización</div>
+          <div class="tabs" id="src-tabs">
+            <span class="controls-label">Mercadolibre:</span>
+            <div class="tab active" data-src="app" onclick="setSource('app')">📱 App</div>
+            <div class="tab" data-src="web" onclick="setSource('web')">💻 Web</div>
+          </div>
+          <div class="tabs" id="view-tabs">
+            <span class="controls-label">Vista:</span>
+            <div class="tab active" data-view="vendedor" onclick="setView('vendedor')">Concesionaria</div>
+            <div class="tab" data-view="moto" onclick="setView('moto')">Moto</div>
+          </div>
+          <div class="tabs" id="mode-tabs">
+            <span class="controls-label">Período:</span>
+            <div class="tab active" data-mode="actual" onclick="setMode('actual')">Actual</div>
+            <div class="tab" data-mode="evolutivo" onclick="setMode('evolutivo')">📈 Evolutivo</div>
+          </div>
+        </div>
+        <!-- DERECHA: Filtros -->
+        <div id="filtros-col" style="flex:1;min-width:0;border-left:1px solid #e8e8ed;padding-left:24px">
+          <div class="subhead">Filtros</div>
+          <div id="controls-vendedor" class="controls hidden">
+            <div><span class="controls-label">Concesionaria:</span>
+            <select id="sel-vendedor" onchange="renderVendedor()"></select></div>
+          </div>
+          <div id="controls-moto" class="controls">
+            <div><span class="controls-label">Marca:</span>
+            <select id="sel-mmarca" onchange="onMotoMarcaChange()"></select></div>
+            <div><span class="controls-label">Modelo:</span>
+            <select id="sel-moto" onchange="renderMoto()"></select></div>
+          </div>
+          <div id="controls-vendedor-moto" class="controls hidden">
+            <div><span class="controls-label">Marca:</span>
+            <select id="sel-vmarca" onchange="onMarcaChange()"></select></div>
+            <div><span class="controls-label">Modelo:</span>
+            <select id="sel-vmodelo" onchange="renderVendedor()"></select></div>
+          </div>
+        </div>
+      </div>
+      <div id="moto-link" class="meta" style="margin-top:8px"></div>
+    </div>
+    <div class="panel-right" id="panel-resultados">
+      <div class="panel-title">Resultados</div>
+      <div style="display:flex;gap:24px;position:relative">
+        <div>
+          <div class="summary" id="moto-summary"></div>
+          <div class="summary hidden" id="vendedor-summary"></div>
+        </div>
+        <div id="moto-insights" style="border-left:1px solid #e8e8ed;padding-left:20px;font-size:12px;color:#1d1d1f"></div>
+        <div id="vendedor-insights" class="hidden" style="border-left:1px solid #e8e8ed;padding-left:20px;font-size:12px;color:#1d1d1f"></div>
+        <button id="btn-wsp" class="hidden" onclick="copiarResumenWsp()"
+          style="position:absolute;top:0;right:0;background:#25d366;color:#fff;border:none;border-radius:8px;
+          padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap">
+          📋 Copiar resumen</button>
+      </div>
+    </div>
   </div>
 
   <!-- VISTA POR MOTO -->
   <div id="view-moto">
-    <div class="controls">
-      <select id="sel-mmarca" onchange="onMotoMarcaChange()"></select>
-      <select id="sel-moto" onchange="renderMoto()"></select>
-    </div>
-    <div class="meta" id="moto-link"></div>
-    <div class="summary" id="moto-summary"></div>
     <div class="card"><table id="tbl-moto"></table></div>
+  </div>
+
+  <!-- VISTA EVOLUCIÓN -->
+  <div id="view-evolucion" class="hidden">
+    <div class="card" style="max-height:none;overflow:visible;padding:16px">
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+        <span class="controls-label">Concesionaria:</span>
+        <select id="ev-vendedor" onchange="onEvolVendedor()" style="flex:0 1 200px"></select>
+        <span class="controls-label">Marca:</span>
+        <select id="ev-marca" onchange="onEvolMarca()" style="flex:0 1 160px"></select>
+        <span class="controls-label">Modelo:</span>
+        <select id="ev-modelo" onchange="renderEvol()" style="flex:0 1 200px"></select>
+      </div>
+      <div id="ev-chart"></div>
+      <div id="ev-empty" style="color:#86868b;font-size:13px;margin-top:8px"></div>
+    </div>
   </div>
 
   <!-- VISTA POR VENDEDOR -->
   <div id="view-vendedor" class="hidden">
-    <div class="controls">
-      <select id="sel-vendedor" onchange="renderVendedor()"></select>
-      <select id="sel-vmarca" onchange="onMarcaChange()"></select>
-      <select id="sel-vmodelo" onchange="renderVendedor()"></select>
-    </div>
-    <div class="summary" id="vendedor-summary"></div>
     <div class="card"><table id="tbl-vendedor"></table></div>
+  </div>
+  </div><!-- /ranking-view -->
+
+  <!-- COMPARADOR -->
+  <div id="comparador-view" class="hidden">
+    <iframe src="comparador.html" style="width:100%;height:calc(100vh - 140px);border:none;background:#fff;border-radius:12px"></iframe>
   </div>
 </div>
 
 <script>
 const DATA = __DATA__;
+const HISTORY = __HISTORY__;
+
+// ---- Navegación Ranking / Comparador ----
+function showSection(sec) {
+  var isRank = sec === 'ranking';
+  document.getElementById('ranking-view').classList.toggle('hidden', !isRank);
+  document.getElementById('comparador-view').classList.toggle('hidden', isRank);
+  document.getElementById('nav-ranking').classList.toggle('active', isRank);
+  document.getElementById('nav-comparador').classList.toggle('active', !isRank);
+}
 
 // ---- Banner de ultima actualizacion con semaforo ----
 (function renderUpdateBanner() {
@@ -438,9 +846,7 @@ const DATA = __DATA__;
     banner.className = 'update-banner ' + cls;
     banner.innerHTML =
       '<span class="ub-icon">' + icon + '</span>' +
-      '<div><div>Última actualización: ' + DATA.generated + ' (' + hace + ')</div>' +
-      '<div class="ub-sub">' + estado + ' · Solo 0km · ' +
-      Object.keys(DATA.modelos).length + ' modelos</div></div>';
+      '<div>Última actualización: ' + DATA.generated + ' (' + hace + ')</div>';
   } else {
     banner.className = 'update-banner ub-stale';
     banner.innerHTML = '<span class="ub-icon">🔴</span><div>Fecha de actualización desconocida</div>';
@@ -463,7 +869,9 @@ function rowClass(seller) {
   return '';
 }
 
-function rowsOf(m) { return (DATA.modelos[m] && DATA.modelos[m].rows) || []; }
+var RANK_SOURCE = 'app';  // 'app' o 'web'
+function srcRows(o) { if (!o) return []; return (RANK_SOURCE === 'app' ? (o.rows_app || o.rows) : o.rows) || []; }
+function rowsOf(m) { return srcRows(DATA.modelos[m]); }
 function urlOf(m)  { return (DATA.modelos[m] && DATA.modelos[m].url) || ''; }
 
 // ---- VISTA POR MOTO ----
@@ -471,17 +879,23 @@ function modelLabel(m) {
   const parts = m.split(' ').slice(1).join(' ');
   return (parts || m).toUpperCase();
 }
+function titleCase(s) { return (s || '').toLowerCase().replace(/\b\w/g, c => c.toUpperCase()); }
+function brandLabel(m) { return titleCase(m.split(' ')[0]); }
+function modelOnlyLabel(m) { const p = m.split(' ').slice(1).join(' '); return titleCase(p || m); }
 function initMoto() {
   // Filtro por marca
   const selB = document.getElementById('sel-mmarca');
   const marcas = [...new Set(Object.keys(DATA.modelos).map(brandOf))].sort();
-  marcas.forEach(b => {
-    const o = document.createElement('option');
-    o.value = b; o.textContent = b.toUpperCase();
-    selB.appendChild(o);
-  });
-  // Modelos de la primera marca
-  fillMotoModelos(marcas[0]);
+  const sorted = marcas.filter(b => b === 'yamaha');
+  const rest = marcas.filter(b => b !== 'yamaha');
+  function addMarcaOpt(b) { const o = document.createElement('option'); o.value = b; o.textContent = b.toUpperCase(); selB.appendChild(o); }
+  function addMarcaSep() { const o = document.createElement('option'); o.disabled = true; o.textContent = '─────────────'; selB.appendChild(o); }
+  sorted.forEach(addMarcaOpt);
+  if (sorted.length && rest.length) addMarcaSep();
+  rest.forEach(addMarcaOpt);
+  const defaultMarca = marcas.includes('yamaha') ? 'yamaha' : marcas[0];
+  selB.value = defaultMarca;
+  fillMotoModelos(defaultMarca);
   renderMoto();
 }
 function fillMotoModelos(marca) {
@@ -489,6 +903,7 @@ function fillMotoModelos(marca) {
   sel.innerHTML = '';
   Object.keys(DATA.modelos)
     .filter(m => brandOf(m) === marca)
+    .sort((a, b) => modelLabel(a).localeCompare(modelLabel(b), 'es', {numeric: true}))
     .forEach(m => {
       const o = document.createElement('option');
       o.value = m; o.textContent = modelLabel(m);
@@ -507,25 +922,57 @@ function renderMoto() {
 
   // link de busqueda
   document.getElementById('moto-link').innerHTML =
-    '🔎 Busqueda: <a href="' + url + '" target="_blank">' + url + '</a>';
+    '<span class="tip"><span style="font-weight:600">🔎 Busqueda</span> <span class="tip-i">i</span>' +
+    '<span class="tip-box">' + TIP_PROCESO + '</span></span>: <a href="' + url + '" target="_blank">' + url + '</a>';
 
-  // summary
+  // summary — muestra el mejor rank organico; si solo tiene Ad, muestra "Ad"
   const summary = document.getElementById('moto-summary');
   summary.innerHTML =
-    stat(rows.length, '0km publicados') +
-    stat(pacheco ? '#' + pacheco.rank : '—', 'Pos. Pacheco') +
-    stat(new Set(rows.map(r => r.seller)).size, 'Vendedores distintos');
+    posStat(sellerRankDisp(rows, isPacheco), 'Ciclofox Pacheco') +
+    posStat(sellerRankDisp(rows, r => r.seller === PUEYRREDON), 'Ciclofox Pueyrredón') +
+    stat(new Set(rows.map(r => r.seller)).size, 'Vendedores únicos');
 
-  // tabla
-  let html = '<thead><tr><th>#</th><th>Ads</th><th>Vendedor</th><th>Precio</th><th>Ubicacion</th><th>Publicacion</th></tr></thead><tbody>';
-  rows.forEach(r => {
+  // insights
+  var ins = [];
+  var hasOutlier = false, minP = 0;
+  var realPrices = rows.filter(r => r.price_num >= 1000000);
+  if (realPrices.length) {
+    var prices = realPrices.map(r => r.price_num);
+    minP = Math.min(...prices);
+    var moda = prices.sort()[Math.floor(prices.length/2)];
+    var cheapSellers = realPrices.filter(r => r.price_num < moda);
+    var uniquePrices = [...new Set(prices)];
+    var minSellers = [...new Set(realPrices.filter(r => r.price_num === minP).map(r => r.seller))];
+    var totalSellers = [...new Set(realPrices.map(r => r.seller))];
+    hasOutlier = uniquePrices.length > 1 && minSellers.length < totalSellers.length / 2;
+    if (hasOutlier) {
+      ins.push('💰 Precio más bajo: <b>$' + minP.toLocaleString('es-AR') + '</b> (' + minSellers.join(', ') + ')');
+    }
+  }
+  var planes = rows.filter(r => r.price_num > 0 && r.price_num < 1000000);
+  if (planes.length > 0) {
+    var planSellers = [...new Set(planes.map(r => r.seller))];
+    if (planSellers.length === 1) ins.push('📋 <b>' + planSellers[0] + '</b> es el único que ofrece Plan de Ahorro');
+    else ins.push('📋 Ofrecen Plan de Ahorro: <b>' + planSellers.join(', ') + '</b>');
+  }
+  var adSellers = [...new Set(rows.filter(r => r.isAd).map(r => r.seller))];
+  if (adSellers.length > 0) ins.push('📢 Con Ads activos: <b>' + adSellers.join(', ') + '</b>');
+  document.getElementById('moto-insights').innerHTML = comentariosHeader(TIP_MOTO) + (ins.length ? ins.map(i => '<div style="margin-bottom:4px">' + i + '</div>').join('') : '<div style="color:#86868b">Sin comentarios para este modelo.</div>');
+
+  // tabla — ads siempre arriba (sin rank), luego organicos por rank
+  const displayRows = rows.slice().sort((a, b) => {
+    if (a.isAd !== b.isAd) return a.isAd ? -1 : 1;
+    if (a.isAd && b.isAd) return 0;
+    return a.rank - b.rank;
+  });
+  let html = '<thead><tr><th class="rank-col">Rank</th><th>Vendedor</th><th>Precio</th><th>Ubicacion</th><th>Publicacion</th></tr></thead><tbody>';
+  displayRows.forEach(r => {
     html += '<tr class="' + rowClass(r.seller) + '">' +
-      '<td class="rank">' + r.rank + '</td>' +
-      '<td class="ads">' + (r.isAd ? '✅' : '') + '</td>' +
+      '<td class="rank rank-col">' + (r.rank == null ? '<span style="color:#86868b;font-size:11px">Ad</span>' : r.rank) + '</td>' +
       '<td><span class="seller-link" onclick="goVendedor(\'' + esc(r.seller) + '\')">' + r.seller + '</span></td>' +
-      '<td>' + fmtPrice(r) + '</td>' +
+      '<td>' + (hasOutlier && r.price_num === minP ? '<span style="color:#ff3b30;font-weight:700">' + r.price_raw + '</span>' : fmtPrice(r)) + '</td>' +
       '<td>' + (r.location || '-') + '</td>' +
-      '<td><a class="pub" href="' + r.link + '" target="_blank">' + r.title + '</a></td>' +
+      '<td>' + mismatchIcon(m, r.title) + '<a class="pub" href="' + r.link + '" target="_blank">' + r.title + '</a></td>' +
       '</tr>';
   });
   html += '</tbody>';
@@ -535,31 +982,33 @@ function renderMoto() {
 // ---- VISTA POR VENDEDOR ----
 function initVendedor() {
   const sellers = new Set();
-  Object.values(DATA.modelos).forEach(o => o.rows.forEach(r => sellers.add(r.seller)));
+  Object.values(DATA.modelos).forEach(o => {
+    (o.rows || []).forEach(r => sellers.add(r.seller));
+    (o.rows_app || []).forEach(r => sellers.add(r.seller));
+  });
   const sel = document.getElementById('sel-vendedor');
-  // Ciclofox Pacheco primero, Pueyrredon segundo
-  const sorted = Array.from(sellers).sort((a,b) => {
-    if (a === PACHECO) return -1; if (b === PACHECO) return 1;
-    if (a === PUEYRREDON) return -1; if (b === PUEYRREDON) return 1;
-    return a.localeCompare(b);
-  });
-  sorted.forEach(s => {
-    const o = document.createElement('option');
-    o.value = s;
-    o.textContent = (s === PACHECO ? '⭐ ' : s === PUEYRREDON ? '🔵 ' : '') + s;
-    sel.appendChild(o);
-  });
+  const pinned1 = [PACHECO, PUEYRREDON];
+  const pinned2 = ['Cycles Motoshop', 'Moto Roma', 'Urquiza Motos', 'Automoto Lanus', 'BRM Bikes', 'Palermo Bikes', 'Motolandia', 'Marelli', 'Yamacity'];
+  const allSellers = Array.from(sellers);
+  const rest = allSellers.filter(s => !pinned1.includes(s) && !pinned2.includes(s)).sort();
+  function addOpt(s) { const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o); }
+  function addSep(label) { const o = document.createElement('option'); o.disabled = true; o.textContent = '─────────────'; sel.appendChild(o); }
+  pinned1.filter(s => allSellers.includes(s)).forEach(addOpt);
+  addSep();
+  pinned2.filter(s => allSellers.includes(s)).forEach(addOpt);
+  addSep();
+  rest.forEach(addOpt);
   // Filtro por marca
   const selB = document.getElementById('sel-vmarca');
   const optBAll = document.createElement('option');
-  optBAll.value = '__all__'; optBAll.textContent = 'Todas las marcas';
+  optBAll.value = '__all__'; optBAll.textContent = 'Todas';
   selB.appendChild(optBAll);
   const marcas = [...new Set(Object.keys(DATA.modelos).map(brandOf))].sort();
-  marcas.forEach(b => {
-    const o = document.createElement('option');
-    o.value = b; o.textContent = b.toUpperCase();
-    selB.appendChild(o);
-  });
+  function addVSep() { const o = document.createElement('option'); o.disabled = true; o.textContent = '─────────────'; selB.appendChild(o); }
+  function addVOpt(b) { const o = document.createElement('option'); o.value = b; o.textContent = b.toUpperCase(); selB.appendChild(o); }
+  addVSep();
+  if (marcas.includes('yamaha')) { addVOpt('yamaha'); addVSep(); }
+  marcas.filter(b => b !== 'yamaha').forEach(addVOpt);
   // Filtro por modelo
   fillModelos('__all__');
   renderVendedor();
@@ -570,13 +1019,14 @@ function fillModelos(marca) {
   const selM = document.getElementById('sel-vmodelo');
   selM.innerHTML = '';
   const optAll = document.createElement('option');
-  optAll.value = '__all__'; optAll.textContent = 'Todos los modelos';
+  optAll.value = '__all__'; optAll.textContent = 'Todos';
   selM.appendChild(optAll);
   Object.keys(DATA.modelos)
     .filter(m => marca === '__all__' || brandOf(m) === marca)
+    .sort((a, b) => modelLabel(a).localeCompare(modelLabel(b), 'es', {numeric: true}))
     .forEach(m => {
       const o = document.createElement('option');
-      o.value = m; o.textContent = m.toUpperCase();
+      o.value = m; o.textContent = modelLabel(m);
       selM.appendChild(o);
     });
 }
@@ -593,35 +1043,164 @@ function renderVendedor() {
   Object.entries(DATA.modelos).forEach(([modelo, o]) => {
     if (fmarca !== '__all__' && brandOf(modelo) !== fmarca) return;
     if (fmodelo !== '__all__' && modelo !== fmodelo) return;
-    o.rows.forEach(r => {
+    srcRows(o).forEach(r => {
       if (r.seller === v) rows.push({ ...r, modelo, searchUrl: o.url });
     });
   });
-  rows.sort((a,b) => a.modelo.localeCompare(b.modelo) || a.rank - b.rank);
+  // ads (rank null) siempre arriba de todo; luego organicos por modelo + rank
+  rows.sort((a,b) => {
+    if (a.isAd !== b.isAd) return a.isAd ? -1 : 1;
+    return a.modelo.localeCompare(b.modelo) || (a.rank == null ? 999 : a.rank) - (b.rank == null ? 999 : b.rank);
+  });
 
   const summary = document.getElementById('vendedor-summary');
-  const avgRank = rows.length ? (rows.reduce((s,r)=>s+r.rank,0)/rows.length).toFixed(1) : '—';
-  const top3 = rows.filter(r => r.rank <= 3).length;
+  const organicRows = rows.filter(r => r.rank != null);  // los Ads no cuentan para rank
+  // Ranking promedio = promedio del MEJOR rank de cada modelo (ignora publis que no son del modelo)
+  const bestPerModel = {};
+  organicRows.forEach(r => {
+    if (titleMismatch(r.modelo, r.title)) return;
+    if (!(r.modelo in bestPerModel) || r.rank < bestPerModel[r.modelo]) bestPerModel[r.modelo] = r.rank;
+  });
+  const bestVals = Object.values(bestPerModel);
+  const avgRank = bestVals.length ? (bestVals.reduce((a,b)=>a+b,0)/bestVals.length).toFixed(1) : '—';
+  const top3 = bestVals.filter(rk => rk <= 3).length;
   summary.innerHTML =
     stat(rows.length, 'Publicaciones') +
     stat(new Set(rows.map(r=>r.modelo)).size, 'Modelos') +
     stat(avgRank, 'Ranking promedio') +
     stat(top3, 'En top 3');
 
-  let html = '<thead><tr><th>Modelo</th><th>#</th><th>Ads</th><th>Precio</th><th>Ubicacion</th><th>Publicacion</th><th>Busqueda</th></tr></thead><tbody>';
-  rows.forEach(r => {
-    html += '<tr class="' + rowClass(r.seller) + '">' +
-      '<td><strong>' + r.modelo.toUpperCase() + '</strong></td>' +
-      '<td class="rank">#' + r.rank + '</td>' +
-      '<td class="ads">' + (r.isAd ? '✅' : '') + '</td>' +
+  // comentarios vendedor
+  var vIns = [];
+  var isCiclofox = v === PACHECO || v === PUEYRREDON;
+  if (isCiclofox && rows.length) {
+    var bestByModel = {};
+    organicRows.forEach(r => {
+      if (titleMismatch(r.modelo, r.title)) return;  // ignora publis que no son del modelo
+      if (!bestByModel[r.modelo] || r.rank < bestByModel[r.modelo].rank)
+        bestByModel[r.modelo] = r;
+    });
+    var allBad = Object.values(bestByModel).filter(r => r.rank >= 9).sort((a,b) => b.rank - a.rank);
+    var badModels = allBad.slice(0, 3);
+    if (badModels.length > 0) {
+      vIns.push('⚠️ Revisar posicionamiento:');
+      badModels.forEach(r => { vIns.push('&nbsp;&nbsp;• <b>' + r.modelo.toUpperCase() + '</b> — posición #' + r.rank); });
+      if (allBad.length > 3) { var extra = allBad.length - 3; vIns.push('&nbsp;&nbsp;+ hay <b>' + extra + '</b> modelo' + (extra > 1 ? 's' : '') + ' más con rank mayor a #8 para revisar'); }
+    }
+  }
+  // modelos de este vendedor con Ads activos
+  var adModelos = [...new Set(rows.filter(r => r.isAd).map(r => r.modelo))];
+  if (adModelos.length > 0) {
+    vIns.push('📢 Con Ads activos:');
+    adModelos.slice(0, 3).forEach(m => { vIns.push('&nbsp;&nbsp;• <b>' + m.toUpperCase() + '</b>'); });
+    if (adModelos.length > 3) { var extraAd = adModelos.length - 3; vIns.push('&nbsp;&nbsp;+ tiene <b>' + extraAd + '</b> modelo' + (extraAd > 1 ? 's' : '') + ' más con Ads'); }
+  }
+  document.getElementById('vendedor-insights').innerHTML = comentariosHeader(TIP_VENDEDOR) + (vIns.length ? vIns.map(i => '<div style="margin-bottom:4px">' + i + '</div>').join('') : '<div style="color:#86868b">Sin comentarios para esta concesionaria.</div>');
+
+  window._vRows = rows;
+  window._vIsCiclofox = isCiclofox;
+  window._vSortCol = null;
+  window._vSortAsc = true;
+  renderVendedorTable(rows, isCiclofox);
+}
+
+var vCols = ['marca','modelo','rank','precio','ubicacion','publicacion','busqueda'];
+function sortVendedor(colIdx) {
+  var key = vCols[colIdx];
+  if (window._vSortCol === key) window._vSortAsc = !window._vSortAsc;
+  else { window._vSortCol = key; window._vSortAsc = true; }
+  var sorted = window._vRows.slice().sort(function(a, b) {
+    var va, vb;
+    if (key === 'marca') { va = brandLabel(a.modelo).toLowerCase(); vb = brandLabel(b.modelo).toLowerCase(); }
+    else if (key === 'modelo') { va = modelOnlyLabel(a.modelo).toLowerCase(); vb = modelOnlyLabel(b.modelo).toLowerCase(); }
+    else if (key === 'rank') { va = a.rank == null ? 999 : a.rank; vb = b.rank == null ? 999 : b.rank; }
+    else if (key === 'precio') { va = a.price_num || 0; vb = b.price_num || 0; }
+    else if (key === 'ubicacion') { va = (a.location||'').toLowerCase(); vb = (b.location||'').toLowerCase(); }
+    else if (key === 'publicacion') { va = a.title.toLowerCase(); vb = b.title.toLowerCase(); }
+    else { va = 0; vb = 0; }
+    if (va < vb) return window._vSortAsc ? -1 : 1;
+    if (va > vb) return window._vSortAsc ? 1 : -1;
+    return 0;
+  });
+  renderVendedorTable(sorted, window._vIsCiclofox);
+}
+function renderVendedorTable(rows, isCiclofox) {
+  var headers = ['Marca','Modelo','Rank','Precio','Ubicacion','Publicacion','Busqueda'];
+  var hhtml = '<thead><tr><th style="cursor:default;width:30px;text-align:center">&nbsp;</th>';
+  headers.forEach(function(h, i) {
+    var arrow = '';
+    if (window._vSortCol === vCols[i]) arrow = '<span class="sort-arrow">' + (window._vSortAsc ? '▲' : '▼') + '</span>';
+    hhtml += '<th class="' + (i === 2 ? 'rank-col' : '') + '" onclick="sortVendedor(' + i + ')">' + h + arrow + '</th>';
+  });
+  hhtml += '</tr></thead><tbody>';
+  rows.forEach(function(r, idx) {
+    var cls = (isCiclofox && r.rank != null && r.rank >= 9) ? rowClass(r.seller) : '';
+    hhtml += '<tr class="' + cls + '">' +
+      '<td style="text-align:center;color:#999;font-size:12px">' + (idx + 1) + '</td>' +
+      '<td>' + brandLabel(r.modelo) + '</td>' +
+      '<td>' + modelOnlyLabel(r.modelo) + '</td>' +
+      '<td class="rank rank-col">' + (r.rank == null ? '<span style="color:#86868b;font-size:11px">Ad</span>' : '#' + r.rank) + '</td>' +
       '<td>' + fmtPrice(r) + '</td>' +
       '<td>' + (r.location || '-') + '</td>' +
-      '<td><a class="pub" href="' + r.link + '" target="_blank">' + r.title + '</a></td>' +
+      '<td>' + mismatchIcon(r.modelo, r.title) + '<a class="pub" href="' + r.link + '" target="_blank">' + r.title + '</a></td>' +
       '<td><a class="seller-link" href="' + r.searchUrl + '" target="_blank">🔎 ver</a></td>' +
       '</tr>';
   });
-  html += '</tbody>';
-  document.getElementById('tbl-vendedor').innerHTML = html;
+  hhtml += '</tbody>';
+  document.getElementById('tbl-vendedor').innerHTML = hhtml;
+}
+
+// Modelo con formato lindo para WhatsApp (codigos en mayuscula: FZ, MT, XTZ...)
+function wsModel(m) {
+  return m.split(' ').map(w =>
+    (/^[a-z0-9-]{1,4}$/.test(w) && !/[aeiou]/.test(w)) ? w.toUpperCase()
+    : w.charAt(0).toUpperCase() + w.slice(1)
+  ).join(' ');
+}
+function _bestByModel(seller, src) {
+  var best = {};
+  Object.entries(DATA.modelos).forEach(([modelo, o]) => {
+    (o[src] || []).forEach(r => {
+      if (r.seller !== seller || r.rank == null) return;
+      if (titleMismatch(modelo, r.title)) return;  // ignora publis que no son del modelo
+      if (!(modelo in best) || r.rank < best[modelo]) best[modelo] = r.rank;
+    });
+  });
+  return best;
+}
+function copiarResumenWsp() {
+  var seller = document.getElementById('sel-vendedor').value;
+  var pubs = new Set(), mods = new Set();
+  Object.entries(DATA.modelos).forEach(([modelo, o]) => {
+    ['rows', 'rows_app'].forEach(src => (o[src] || []).forEach(r => {
+      if (r.seller !== seller) return;
+      var id = (r.link || '').match(/MLA-?(\d+)/);
+      pubs.add(id ? id[1] : (r.link || modelo)); mods.add(modelo);
+    }));
+  });
+  function block(src) {
+    var best = _bestByModel(seller, src);
+    var n = Object.keys(best).length;
+    var vals = Object.values(best);
+    var avg = vals.length ? (vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1) : '—';
+    var bad = Object.entries(best).filter(e => e[1] >= 9).sort((a, b) => b[1] - a[1]);
+    var lines = bad.map(e => '· ' + wsModel(e[0]) + ' (#' + e[1] + ')').join('\n');
+    return 'Ranking promedio: #' + avg + '\n' +
+      bad.length + ' / ' + n + ' modelos con mal rank\n' +
+      (bad.length ? 'Modelos a revisar:\n' + lines + '\n' : '');
+  }
+  var gen = DATA.generated || '';
+  var fecha = gen.length >= 16 ? gen.slice(8, 10) + '/' + gen.slice(5, 7) + ' ' + gen.slice(11, 16) : gen;
+  var txt =
+    '*RANKING MERCADO LIBRE — ' + seller.toUpperCase() + '*\n' +
+    '_Actualizado: ' + fecha + '_\n\n' +
+    '*Resumen:*\n' + pubs.size + ' publicaciones totales\n' + mods.size + ' modelos diferentes\n\n' +
+    '*Web:*\n' + block('rows') + '\n' +
+    '*App:*\n' + block('rows_app');
+  navigator.clipboard.writeText(txt).then(() => {
+    var b = document.getElementById('btn-wsp'), o = b.innerHTML;
+    b.innerHTML = '✓ Copiado'; setTimeout(() => b.innerHTML = o, 1500);
+  }).catch(() => { window.prompt('Copiá el resumen:', txt); });
 }
 
 function goVendedor(seller) {
@@ -636,32 +1215,336 @@ function goVendedor(seller) {
 function stat(num, lbl) {
   return '<div class="stat"><div class="num">' + num + '</div><div class="lbl">' + lbl + '</div></div>';
 }
+
+// ---- VISTA EVOLUCIÓN ----
+function initEvol() {
+  const series = (HISTORY && HISTORY.series) || {};
+  const sel = document.getElementById('ev-vendedor');
+  sel.innerHTML = '';
+  // mismo orden que el selector de concesionaria: Ciclofox primero
+  const pinned = [PACHECO, PUEYRREDON];
+  const all = Object.keys(series);
+  const ordered = pinned.filter(s => all.includes(s)).concat(all.filter(s => !pinned.includes(s)).sort());
+  ordered.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o); });
+  onEvolVendedor();
+}
+function onEvolVendedor() {
+  const series = (HISTORY && HISTORY.series) || {};
+  const v = document.getElementById('ev-vendedor').value;
+  const selMk = document.getElementById('ev-marca');
+  selMk.innerHTML = '';
+  const modelos = Object.keys(series[v] || {});
+  const marcas = [...new Set(modelos.map(m => m.split(' ')[0]))].sort((a,b)=>a.localeCompare(b,'es'));
+  marcas.forEach(mk => { const o = document.createElement('option'); o.value = mk; o.textContent = titleCase(mk); selMk.appendChild(o); });
+  onEvolMarca();
+}
+function onEvolMarca() {
+  const series = (HISTORY && HISTORY.series) || {};
+  const v = document.getElementById('ev-vendedor').value;
+  const mk = document.getElementById('ev-marca').value;
+  const selM = document.getElementById('ev-modelo');
+  selM.innerHTML = '';
+  const modelos = Object.keys(series[v] || {}).filter(m => m.split(' ')[0] === mk)
+    .sort((a,b)=>modelLabel(a).localeCompare(modelLabel(b),'es',{numeric:true}));
+  modelos.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = modelLabel(m); selM.appendChild(o); });
+  renderEvol();
+}
+function renderEvol() {
+  const series = (HISTORY && HISTORY.series) || {};
+  const v = document.getElementById('ev-vendedor').value;
+  const m = document.getElementById('ev-modelo').value;
+  const pts = ((series[v] || {})[m]) || [];
+  const empty = document.getElementById('ev-empty');
+  if (pts.length === 0) {
+    document.getElementById('ev-chart').innerHTML = '';
+    empty.textContent = 'Sin historial todavía para esta selección.';
+    return;
+  }
+  if (pts.length === 1) {
+    empty.innerHTML = '📌 Hay <b>1 sola medición</b> por ahora (' + pts[0][0] + '). El gráfico de evolución se va a ver cuando haya al menos 2 actualizaciones. Valores actuales — App: <b>' + (pts[0][2] ?? '—') + '</b> · Web: <b>' + (pts[0][1] ?? '—') + '</b>.';
+  } else {
+    empty.textContent = '';
+  }
+  document.getElementById('ev-chart').innerHTML = evolChart(pts);
+}
+// Gráfico SVG de líneas: rank en el tiempo (1 arriba). Verde=App, Gris=Web.
+function evolChart(pts) {
+  const W = 760, H = 320, padL = 38, padR = 16, padT = 16, padB = 56;
+  const ranks = [];
+  pts.forEach(p => { if (p[1] != null) ranks.push(p[1]); if (p[2] != null) ranks.push(p[2]); });
+  const maxR = Math.max(5, ...ranks), minR = 1;
+  const n = pts.length;
+  const x = i => padL + (n === 1 ? (W-padL-padR)/2 : i * (W - padL - padR) / (n - 1));
+  const y = r => padT + (r - minR) * (H - padT - padB) / (maxR - minR || 1);
+  let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;font-family:inherit">';
+  // grilla horizontal + labels de rank
+  const steps = Math.min(maxR, 8);
+  for (let k = 0; k <= steps; k++) {
+    const r = Math.round(minR + k * (maxR - minR) / steps);
+    const yy = y(r);
+    svg += '<line x1="' + padL + '" y1="' + yy + '" x2="' + (W-padR) + '" y2="' + yy + '" stroke="#eee"/>';
+    svg += '<text x="' + (padL-6) + '" y="' + (yy+4) + '" text-anchor="end" font-size="10" fill="#999">#' + r + '</text>';
+  }
+  // labels de fecha (x)
+  pts.forEach((p, i) => {
+    const d = (p[0] || '').slice(0, 10);
+    svg += '<text x="' + x(i) + '" y="' + (H-padB+18) + '" text-anchor="middle" font-size="9" fill="#999" transform="rotate(0)">' + d + '</text>';
+  });
+  function line(idx, color) {
+    let d = '', dots = '';
+    pts.forEach((p, i) => {
+      const val = p[idx];
+      if (val == null) return;
+      const px = x(i), py = y(val);
+      d += (d ? ' L' : 'M') + px + ' ' + py;
+      dots += '<circle cx="' + px + '" cy="' + py + '" r="3.5" fill="' + color + '"/>';
+    });
+    return (d ? '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="2"/>' : '') + dots;
+  }
+  svg += line(2, '#0071e3');  // App
+  svg += line(1, '#86868b');  // Web
+  svg += '</svg>';
+  // leyenda
+  svg += '<div style="display:flex;gap:18px;margin-top:6px;font-size:12px">' +
+    '<span><span style="display:inline-block;width:12px;height:3px;background:#0071e3;vertical-align:middle;margin-right:5px"></span>App</span>' +
+    '<span><span style="display:inline-block;width:12px;height:3px;background:#86868b;vertical-align:middle;margin-right:5px"></span>Web</span>' +
+    '<span style="color:#86868b">(menor = mejor posición)</span></div>';
+  return svg;
+}
+var TIP_MOTO =
+  '💰 <b>Precio más bajo:</b> aparece solo si el precio mínimo lo tienen menos de la mitad de los vendedores (no cuenta planes de ahorro).\n' +
+  '📋 <b>Plan de Ahorro:</b> publicaciones en cuotas (precio bajo). Indica qué vendedores lo ofrecen.\n' +
+  '📢 <b>Con Ads activos:</b> vendedores que están pauteando este modelo.';
+var TIP_VENDEDOR =
+  '⚠️ <b>Revisar posicionamiento</b> (solo Ciclofox): modelos cuyo mejor rank orgánico es #9 o peor. Muestra los 3 peores.\n' +
+  '📢 <b>Con Ads activos:</b> modelos de esta concesionaria que tienen Ads (muestra hasta 3).';
+var TIP_PROCESO =
+  '<b>¿Cómo se arma este ranking?</b>\n\n' +
+  '1. Se busca el modelo en Mercado Libre (link de abajo) y se toman las primeras 20 publicaciones del listado.\n' +
+  '2. Se filtran solo las 0km (se descartan usadas).\n' +
+  '3. De cada publicación se identifica el vendedor: primero por el dato del listado o el título; si no se puede, se entra a la publicación para confirmarlo.\n' +
+  '4. Las publicaciones patrocinadas (Ads) se muestran arriba de todo pero no ocupan puesto en el ranking. Tené en cuenta que los Ads pueden variar según el usuario y el día en que se hace la búsqueda.\n' +
+  '5. Al resto se le asigna el rank según el orden en que Mercado Libre las muestra (posición 1, 2, 3…).\n\n' +
+  '⚠️ Mercado Libre puede incluir publicaciones de modelos relacionados de la misma marca, por eso a veces el título de la publicación no coincide exactamente con el modelo buscado.\n\n' +
+  'La actualización es manual; la fecha figura arriba a la derecha.';
+function comentariosHeader(tip) {
+  return '<div style="margin-bottom:6px"><span class="tip" style="font-weight:700">Comentarios ' +
+    '<span class="tip-i">i</span><span class="tip-box">' + tip + '</span></span></div>';
+}
+// True si el titulo NO corresponde al modelo buscado.
+// Match por tokens (alfa y numéricos) sin exigir orden ni contigüidad, así
+// "Yamaha Ray Zr 125" matchea con "ray 125", pero "Skua 250" no matchea "skua 150".
+// "full" es opcional (una base no se marca como distinta de la full y viceversa).
+function titleMismatch(modelo, title) {
+  var t = (title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  var rest = modelo.split(' ').slice(1).join(' ').toLowerCase().replace(/full/g, ' ');
+  var toks = rest.match(/[a-z]+|[0-9]+/g) || [];
+  if (!toks.length) return false;
+  // Los tokens deben aparecer en orden y CERCA (hasta 6 chars entre uno y otro):
+  // "Ray Zr 125" matchea "ray 125"; "Skua 250 0km No 150" NO matchea "skua 150".
+  var re = new RegExp(toks.join('[a-z0-9]{0,6}'));
+  return !re.test(t);
+}
+function mismatchIcon(modelo, title) {
+  if (!titleMismatch(modelo, title)) return '';
+  return '<span class="tip tip-float" style="margin-right:4px">⚠️' +
+    '<span class="tip-box tip-box--sm">El título de la publicación <b>no coincide</b> con el modelo buscado. ' +
+    'Mercado Libre incluye resultados de modelos relacionados de la misma marca, por eso esta publicación puede ser de otro modelo.</span></span>';
+}
+function posColor(rank) {
+  if (!rank || rank === '—' || rank === 'Ad') return '#86868b';
+  var n = parseInt(String(rank).replace('#',''));
+  if (isNaN(n)) return '#86868b';
+  if (n <= 3) return '#34c759';
+  if (n <= 8) return '#e8a317';
+  return '#ff3b30';
+}
+// Mejor rank organico de un vendedor; si solo tiene Ad muestra "Ad"; si no, "—"
+function sellerRankDisp(rows, pred) {
+  var organic = rows.find(r => pred(r) && r.rank != null);
+  if (organic) return '#' + organic.rank;
+  if (rows.some(r => pred(r))) return 'Ad';
+  return '—';
+}
+function posStat(rank, lbl) {
+  var display = rank || '—';
+  var color = posColor(rank);
+  return '<div class="stat"><div class="num rank-col" style="color:' + color + '">' + display + '</div><div class="lbl">' + lbl + '</div></div>';
+}
 function esc(s){ return s.replace(/'/g,"\\'"); }
 
+function setSource(s) {
+  RANK_SOURCE = s;
+  document.querySelectorAll('.tab[data-src]').forEach(t => t.classList.toggle('active', t.dataset.src === s));
+  if (!document.getElementById('view-moto').classList.contains('hidden')) renderMoto();
+  if (!document.getElementById('view-vendedor').classList.contains('hidden')) renderVendedor();
+}
+var currentView = 'vendedor';
+var MODE = 'actual';
 function setView(v) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === v));
+  currentView = v;
+  document.querySelectorAll('.tab[data-view]').forEach(t => t.classList.toggle('active', t.dataset.view === v));
+  if (MODE !== 'actual') return;
   document.getElementById('view-moto').classList.toggle('hidden', v !== 'moto');
   document.getElementById('view-vendedor').classList.toggle('hidden', v !== 'vendedor');
+  document.getElementById('controls-moto').classList.toggle('hidden', v !== 'moto');
+  document.getElementById('controls-vendedor').classList.toggle('hidden', v !== 'vendedor');
+  document.getElementById('controls-vendedor-moto').classList.toggle('hidden', v !== 'vendedor');
+  document.getElementById('moto-summary').classList.toggle('hidden', v !== 'moto');
+  document.getElementById('vendedor-summary').classList.toggle('hidden', v !== 'vendedor');
+  document.getElementById('moto-link').classList.toggle('hidden', v !== 'moto');
+  document.getElementById('moto-insights').classList.toggle('hidden', v !== 'moto');
+  document.getElementById('vendedor-insights').classList.toggle('hidden', v !== 'vendedor');
+  document.getElementById('btn-wsp').classList.toggle('hidden', v !== 'vendedor');
+}
+function setMode(m) {
+  MODE = m;
+  document.querySelectorAll('.tab[data-mode]').forEach(t => t.classList.toggle('active', t.dataset.mode === m));
+  var evo = (m === 'evolutivo');
+  document.getElementById('view-evolucion').classList.toggle('hidden', !evo);
+  document.getElementById('panel-resultados').classList.toggle('hidden', evo);
+  document.getElementById('src-tabs').classList.toggle('hidden', evo);
+  document.getElementById('view-tabs').classList.toggle('hidden', evo);
+  document.getElementById('filtros-col').classList.toggle('hidden', evo);
+  if (evo) {
+    ['view-moto','view-vendedor','controls-moto','controls-vendedor','controls-vendedor-moto',
+     'moto-summary','vendedor-summary','moto-link','moto-insights','vendedor-insights','btn-wsp']
+      .forEach(id => document.getElementById(id).classList.add('hidden'));
+    renderEvol();
+  } else {
+    setView(currentView);
+  }
 }
 
-initMoto();
-initVendedor();
+// ---- AUTH ----
+let CURRENT_USER = null;
+
+async function doLogin() {
+  const email = document.getElementById('auth-email').value.trim();
+  const pass  = document.getElementById('auth-pass').value;
+  const errEl = document.getElementById('auth-err');
+  const btn   = document.getElementById('auth-btn');
+  errEl.textContent = '';
+  if (!email || !pass) { errEl.textContent = 'Completá email y contraseña'; return; }
+  btn.disabled = true; btn.textContent = 'Entrando…';
+  const { error } = await sb.auth.signInWithPassword({ email, password: pass });
+  btn.disabled = false; btn.textContent = 'Entrar';
+  if (error) { errEl.textContent = 'Email o contraseña incorrectos'; document.getElementById('auth-pass').select(); return; }
+  await enterApp();
+}
+
+async function loadRole() {
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) { CURRENT_USER = null; return; }
+  let role = 'lectura';
+  const { data } = await sb.from('profiles').select('role').eq('id', user.id).single();
+  if (data && data.role) role = data.role;
+  CURRENT_USER = { email: user.email, role };
+}
+
+function applyMode() {
+  const isAdmin = !!(CURRENT_USER && CURRENT_USER.role === 'admin');
+  document.body.classList.toggle('readonly', !isAdmin);
+  const chip = document.getElementById('user-chip');
+  if (chip && CURRENT_USER) {
+    chip.innerHTML =
+      '<span>' + CURRENT_USER.email + '</span>' +
+      (isAdmin ? '<span class="role-badge role-admin">ADMIN</span>' : '<span class="role-badge role-lectura">LECTURA</span>') +
+      '<button onclick="logout()">Salir</button>';
+  }
+}
+
+async function logout() {
+  try { await sb.auth.signOut(); } catch (e) {}
+  location.reload();
+}
+
+async function enterApp() {
+  await loadRole();
+  applyMode();
+  document.getElementById('auth-gate').remove();
+  document.getElementById('main-app').style.display = '';
+  initMoto();
+  initVendedor();
+  initEvol();
+  setView('vendedor');
+}
+
+async function startApp() {
+  const sub = document.getElementById('auth-sub');
+  if (!sb) { if (sub) sub.textContent = 'Error de configuración Supabase.'; return; }
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    if (session) { await enterApp(); return; }
+  } catch (e) { console.warn('getSession falló:', e.message || e); }
+  if (sub) sub.textContent = 'Ingresá con tu usuario';
+  document.getElementById('auth-form').style.display = 'block';
+  document.getElementById('auth-email').focus();
+}
+
+// Posiciona los tooltips de tabla (tip-float) con position:fixed para que no
+// los recorte el scroll del contenedor.
+function positionFloatTip(tip) {
+  var box = tip.querySelector('.tip-box');
+  if (!box) return;
+  var r = tip.getBoundingClientRect();
+  var w = box.offsetWidth || 280;
+  box.style.position = 'fixed';
+  box.style.top = (r.bottom + 4) + 'px';
+  box.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
+}
+document.addEventListener('mouseover', function(e) {
+  var tip = e.target.closest('.tip-float');
+  if (tip) positionFloatTip(tip);
+});
+
+// Click en "Comentarios"/ícono "i"/⚠️ fija el tooltip; click afuera lo cierra
+document.addEventListener('click', function(e) {
+  var tip = e.target.closest('.tip');
+  document.querySelectorAll('.tip.pinned').forEach(function(t) { if (t !== tip) t.classList.remove('pinned'); });
+  if (tip) { e.stopPropagation(); tip.classList.toggle('pinned'); if (tip.classList.contains('tip-float')) positionFloatTip(tip); }
+});
+
+startApp();
 </script>
 </body>
 </html>"""
 
 
+def login_once():
+    """Abre Chrome con el perfil dedicado y espera a que te loguees en ML.
+    Corre esto UNA sola vez. Despues el perfil queda con la sesion guardada."""
+    print(">> Abriendo Chrome con el perfil del scraper.")
+    print(">> Logueate en Mercado Libre en la ventana que se abre.")
+    driver = get_driver(use_profile=True)
+    driver.get("https://www.mercadolibre.com.ar/")
+    input(">> Cuando termines de loguearte, volve aca y apreta ENTER...")
+    driver.quit()
+    print(">> Sesion guardada. Ya podes correr: python ml_dashboard.py --profile")
+
+
 if __name__ == "__main__":
-    flags = {"--profile", "--html-only"}
+    flags = {"--profile", "--html-only", "--login"}
     use_profile = "--profile" in sys.argv
     html_only = "--html-only" in sys.argv
+    do_login = "--login" in sys.argv
     custom = [a for a in sys.argv[1:] if a not in flags]
     modelos = custom if custom else MODELOS
     try:
-        if html_only:
+        if do_login:
+            login_once()
+        elif html_only:
             regenerar_html()
         else:
             main(modelos, use_profile=use_profile)
+            # En una corrida completa (sin modelos custom) tambien refresca el comparador
+            if not custom:
+                print("\n=== Actualizando comparador de publicaciones ===")
+                import subprocess
+                r = subprocess.run([sys.executable, "comparador.py"],
+                                   cwd=os.path.dirname(os.path.abspath(__file__)))
+                if r.returncode != 0:
+                    print("(El comparador termino con error; el ranking ya quedo actualizado)")
     except KeyboardInterrupt:
         print("\nCancelado.")
     except Exception as e:

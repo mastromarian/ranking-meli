@@ -19,3 +19,10 @@ chromedriver*
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Token de la app (privado)
+app_session.json
+_mitm_capture.py
+_capture*.txt
+chrome_profile/
+ml_history.json
