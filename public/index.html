@@ -899,13 +899,13 @@ let CURRENT_USER = null;
    usuario no ve nada salvo que Cloudflare sospeche de un bot. Con la clave vacía
    no hace nada (login como antes). Los tokens son de un solo uso → tsReset(). */
 const TURNSTILE_SITE_KEY = '0x4AAAAAAFFs3P5Fdim-7Idh';
-let TS_WIDGET = null, TS_TOKEN = '', TS_FALLO = false;   // TS_FALLO: Cloudflare no respondió → no se espera
+let TS_WIDGET = null, TS_TOKEN = '', TS_FALLO = false, TS_PEDIDO = false;   // TS_FALLO: Cloudflare no respondió → no se espera · TS_PEDIDO: ya se ejecutó para este intento
 function tsCargar() {
   const cont = document.getElementById('auth-turnstile');
   if (!TURNSTILE_SITE_KEY || !cont || TS_WIDGET !== null) return;
   const render = () => {
     if (TS_WIDGET !== null || !window.turnstile) return;
-    TS_WIDGET = turnstile.render(cont, { sitekey: TURNSTILE_SITE_KEY, appearance: 'interaction-only', language: 'es',
+    TS_WIDGET = turnstile.render(cont, { sitekey: TURNSTILE_SITE_KEY, appearance: 'interaction-only', language: 'es', execution: 'execute', 'refresh-expired': 'manual',
       callback: t => { TS_TOKEN = t; }, 'expired-callback': () => { TS_TOKEN = ''; }, 'error-callback': () => { TS_TOKEN = ''; TS_FALLO = true; } });
   };
   if (window.turnstile) return render();
@@ -919,26 +919,37 @@ function tsCargar() {
 async function tsToken() {
   if (!TURNSTILE_SITE_KEY) return undefined;
   tsCargar();
+  // 29/9: la verificación corre recién acá (al tocar "Entrar"), no al mostrar el login: con
+  // execution 'execute' el widget no se verifica solo ni se renueva de fondo (una pantalla de
+  // login abierta todo el día generaba cientos de verificaciones en Cloudflare).
   const t0 = Date.now();
-  while (!TS_TOKEN && !TS_FALLO && Date.now() - t0 < 8000) await new Promise(r => setTimeout(r, 100));
+  while (!TS_TOKEN && !TS_FALLO && Date.now() - t0 < 10000) {
+    if (!TS_PEDIDO && window.turnstile && TS_WIDGET !== null) { TS_PEDIDO = true; try { turnstile.execute(TS_WIDGET); } catch (e) { TS_FALLO = true; } }
+    await new Promise(r => setTimeout(r, 100));
+  }
   return TS_TOKEN || undefined;
 }
-function tsReset() { TS_TOKEN = ''; TS_FALLO = false; if (window.turnstile && TS_WIDGET !== null) { try { turnstile.reset(TS_WIDGET); } catch (e) {} } }
+function tsReset() { TS_TOKEN = ''; TS_FALLO = false; TS_PEDIDO = false; if (window.turnstile && TS_WIDGET !== null) { try { turnstile.reset(TS_WIDGET); } catch (e) {} } }
 
+let LOGIN_EN_CURSO = false;   // 29/9: un doble Enter/clic mientras se esperaba el token de Turnstile disparaba dos logins
 async function doLogin() {
+  if (LOGIN_EN_CURSO) return;
   const email = document.getElementById('auth-email').value.trim();
   const pass  = document.getElementById('auth-pass').value;
   const errEl = document.getElementById('auth-err');
   const btn   = document.getElementById('auth-btn');
   errEl.textContent = '';
   if (!email || !pass) { errEl.textContent = 'Completá email y contraseña'; return; }
+  LOGIN_EN_CURSO = true;
   btn.disabled = true; btn.textContent = 'Entrando…';
-  const captchaToken = await tsToken();   // Turnstile (si está configurado)
-  const { error } = await sb.auth.signInWithPassword({ email, password: pass, options: captchaToken ? { captchaToken } : undefined });
-  tsReset();
-  btn.disabled = false; btn.textContent = 'Entrar';
-  if (error) { errEl.textContent = /captcha/i.test(error.message || '') ? 'No se pudo verificar el navegador. Recargá la página y probá de nuevo.' : 'Email o contraseña incorrectos'; document.getElementById('auth-pass').select(); return; }
-  await enterApp();
+  try {
+    const captchaToken = await tsToken();   // Turnstile (si está configurado)
+    const { error } = await sb.auth.signInWithPassword({ email, password: pass, options: captchaToken ? { captchaToken } : undefined });
+    tsReset();
+    btn.disabled = false; btn.textContent = 'Entrar';
+    if (error) { if (CURRENT_USER) return; errEl.textContent = /captcha/i.test(error.message || '') ? 'No se pudo verificar el navegador. Recargá la página y probá de nuevo.' : 'Email o contraseña incorrectos'; document.getElementById('auth-pass')?.select(); return; }
+    await enterApp();
+  } finally { LOGIN_EN_CURSO = false; }
 }
 
 async function loadRole() {
