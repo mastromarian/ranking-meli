@@ -129,10 +129,11 @@
         onkeydown="if(event.key==='Enter')doLogin()">
       <div id="auth-turnstile" style="margin:8px 0 0"></div>
       <div id="auth-err" style="color:#e3000f;font-size:12px;font-weight:600;height:16px;margin-top:8px;"></div>
-      <button id="auth-btn" onclick="doLogin()"
-        style="width:100%;margin-top:10px;padding:11px;background:#0071e3;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">
-        Entrar
-      </button>
+      <!-- 15/10: el botón arranca en "Verificando el navegador…" (atenuado) y pasa a "Entrar" cuando llega el token (tsBoton) -->
+      <style>#auth-btn.verificando { opacity: .65; cursor: progress !important; }</style>
+      <button id="auth-btn" onclick="doLogin()" class="verificando"
+        style="width:100%;margin-top:10px;padding:11px;background:#0071e3;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">Verificando el navegador…</button>
+      <div id="auth-ts-nota" style="display:none;margin-top:8px;font-size:12px;color:#86868b;text-align:center">Estamos verificando que el navegador sea seguro. Tarda unos segundos; el botón se habilita solo.</div>
     </div>
   </div>
 </div>
@@ -909,6 +910,7 @@ const TURNSTILE_SITE_KEY = '0x4AAAAAAFFs3P5Fdim-7Idh';
    navegador no está soportado o si el script no carga. Tema claro para el desafío visible. */
 let TS_WIDGET = null, TS_TOKEN = '', TS_FALLO = false, TS_PEDIDO = false, TS_ERRORES = 0;   // TS_FALLO: no hay Cloudflare (script no cargó / navegador no soportado) → no se espera · TS_PEDIDO: ya se ejecutó para este intento
 const TS_ESPERA_MS = 30000;
+let TS_AL_ABRIR = false;   // 15/10: el login pidió la verificación al abrirse (si el script todavía no cargó, se pide al cargar)
 function tsCargar() {
   const cont = document.getElementById('auth-turnstile');
   if (!TURNSTILE_SITE_KEY || !cont || TS_WIDGET !== null) return;
@@ -916,18 +918,20 @@ function tsCargar() {
     if (TS_WIDGET !== null || !window.turnstile) return;
     try {
       TS_WIDGET = turnstile.render(cont, { sitekey: TURNSTILE_SITE_KEY, appearance: 'interaction-only', theme: 'light', language: 'es', execution: 'execute', 'refresh-expired': 'manual', retry: 'auto', 'retry-interval': 4000,
-        callback: t => { TS_TOKEN = t; TS_ERRORES = 0; },
-        'expired-callback': () => { TS_TOKEN = ''; TS_PEDIDO = false; },   // venció (5 min): el próximo tsToken lo vuelve a pedir
-        'timeout-callback': () => { TS_TOKEN = ''; TS_PEDIDO = false; },   // el desafío visible venció sin respuesta: se vuelve a pedir
-        'error-callback': (cod) => { TS_TOKEN = ''; TS_ERRORES++; console.warn('turnstile:', cod); if (TS_ERRORES >= 6) TS_FALLO = true; return false; },   // false = Cloudflare reintenta solo
-        'unsupported-callback': () => { TS_FALLO = true; } });
+        callback: t => { TS_TOKEN = t; TS_ERRORES = 0; tsBoton(); },
+        'expired-callback': () => { TS_TOKEN = ''; TS_PEDIDO = false; tsBoton(); },   // venció (5 min): el próximo tsToken lo vuelve a pedir
+        'timeout-callback': () => { TS_TOKEN = ''; TS_PEDIDO = false; tsBoton(); },   // el desafío visible venció sin respuesta: se vuelve a pedir
+        'error-callback': (cod) => { TS_TOKEN = ''; TS_ERRORES++; console.warn('turnstile:', cod); if (TS_ERRORES >= 6) TS_FALLO = true; tsBoton(); return false; },   // false = Cloudflare reintenta solo
+        'unsupported-callback': () => { TS_FALLO = true; tsBoton(); } });
     } catch (e) { TS_FALLO = true; }
     if (TS_WIDGET === null) TS_FALLO = true;
+    if (TS_AL_ABRIR) tsPedir();   // 15/10: la verificación arranca apenas se ve el login (el script tardó en cargar)
+    tsBoton();
   };
   if (window.turnstile) return render();
   const ya = document.getElementById('ts-script');
   if (ya) { ya.addEventListener('load', render); return; }
-  const s = document.createElement('script'); s.id = 'ts-script'; s.async = true; s.onload = render; s.onerror = () => { TS_FALLO = true; };
+  const s = document.createElement('script'); s.id = 'ts-script'; s.async = true; s.onload = render; s.onerror = () => { TS_FALLO = true; tsBoton(); };
   s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
   document.head.appendChild(s);
 }
@@ -938,6 +942,17 @@ function tsPedir() {
   if (!window.turnstile || TS_WIDGET === null) return;
   TS_PEDIDO = true;
   try { turnstile.execute(TS_WIDGET); } catch (e) { TS_PEDIDO = false; TS_ERRORES++; if (TS_ERRORES >= 6) TS_FALLO = true; }
+  tsBoton();
+}
+/* 15/10 (mismo cambio que DIMO del 15/10): el botón arranca en "Verificando el navegador…" (atenuado, con una nota abajo)
+   apenas se ve el login y pasa a "Entrar" cuando llega el token de Cloudflare. No se deshabilita: si lo tocan igual, el
+   login NO sale sin token — espera (tsToken) y entra solo apenas llega, así nadie tiene que tocar dos veces. */
+function tsBoton() {
+  const btn = document.getElementById('auth-btn'), nota = document.getElementById('auth-ts-nota');
+  if (!btn || LOGIN_EN_CURSO) return;
+  const verificando = !!TURNSTILE_SITE_KEY && !TS_TOKEN && !TS_FALLO && (TS_PEDIDO || (TS_AL_ABRIR && TS_WIDGET === null));
+  btn.classList.toggle('verificando', verificando); btn.textContent = verificando ? 'Verificando el navegador…' : 'Entrar';
+  if (nota) nota.style.display = verificando ? '' : 'none';
 }
 // Token para Supabase: espera hasta 30 s a que Cloudflare lo emita. undefined = sin CAPTCHA configurado.
 async function tsToken(enEspera) {
@@ -953,7 +968,7 @@ async function tsToken(enEspera) {
   }
   return TS_TOKEN || undefined;
 }
-function tsReset() { TS_TOKEN = ''; TS_FALLO = false; TS_PEDIDO = false; TS_ERRORES = 0; if (window.turnstile && TS_WIDGET !== null) { try { turnstile.reset(TS_WIDGET); } catch (e) {} } }
+function tsReset() { TS_TOKEN = ''; TS_FALLO = false; TS_PEDIDO = false; TS_ERRORES = 0; if (window.turnstile && TS_WIDGET !== null) { try { turnstile.reset(TS_WIDGET); } catch (e) {} } tsBoton(); }
 
 /* 14/10: login fallido → queda en DIMO → Reportes → Accesos (mismo registro que DIMO: rpc registrar_intento_fallido,
    ejecutable sin sesión; la base solo guarda si el email existe, con topes por IP y por email, y la IP la toma de los
@@ -1005,9 +1020,19 @@ async function doLogin() {
   LOGIN_EN_CURSO = true;
   btn.disabled = true; btn.textContent = 'Entrando…';
   try {
-    const captchaToken = await tsToken(() => { btn.textContent = 'Verificando el navegador…'; });   // Turnstile (si está configurado)
-    btn.textContent = 'Entrando…';
-    const { error } = await sb.auth.signInWithPassword({ email, password: pass, options: captchaToken ? { captchaToken } : undefined });
+    const nota = document.getElementById('auth-ts-nota');
+    const verificando = () => { btn.textContent = 'Verificando el navegador…'; if (nota) nota.style.display = ''; };
+    const captchaToken = await tsToken(verificando);   // Turnstile (si está configurado)
+    btn.textContent = 'Entrando…'; btn.classList.remove('verificando'); if (nota) nota.style.display = 'none';
+    let { error } = await sb.auth.signInWithPassword({ email, password: pass, options: captchaToken ? { captchaToken } : undefined });
+    /* 15/10: si Supabase rechaza la verificación (token vencido o ya usado), se pide otra y se reintenta UNA vez solo,
+       sin que la persona tenga que volver a tocar Entrar (antes: "No se pudo verificar el navegador" y entraba al 2° toque) */
+    if (error && /captcha/i.test(error.message || '') && !CURRENT_USER && TURNSTILE_SITE_KEY) {
+      tsReset(); btn.disabled = true; btn.classList.remove('verificando');
+      const t2 = await tsToken(verificando);
+      btn.textContent = 'Entrando…'; if (nota) nota.style.display = 'none';
+      ({ error } = await sb.auth.signInWithPassword({ email, password: pass, options: t2 ? { captchaToken: t2 } : undefined }));
+    }
     tsReset();
     btn.disabled = false; btn.textContent = 'Entrar';
     if (error) {
@@ -1092,7 +1117,7 @@ async function startApp() {
   } catch (e) { console.warn('getSession falló:', e.message || e); }
   if (sub) sub.textContent = 'Ingresá con tu usuario';
   document.getElementById('auth-form').style.display = 'block';
-  tsCargar();   // Turnstile se arma cuando se ve el login
+  TS_AL_ABRIR = true; tsCargar(); tsPedir(); tsBoton();   // Turnstile se arma cuando se ve el login; 15/10: y verifica ya
   document.getElementById('auth-email').focus();
 }
 
