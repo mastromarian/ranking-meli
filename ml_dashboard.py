@@ -575,6 +575,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Mercado Libre - Posicionamiento</title>
+<!-- 15/10 (Mariano: "¿hay forma de que tarde menos en verificar?"; mismo cambio que DIMO): la conexión con Cloudflare y su
+     script arrancan con la página (antes, recién al mostrarse el login), así la verificación empieza unos cientos de ms antes.
+     Si el script falla antes de que el login lo use, onerror lo marca y tsCargar lo ve (data-err). -->
+<link rel="preconnect" href="https://challenges.cloudflare.com">
+<script id="ts-script" src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer onerror="this.dataset.err = '1'"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -701,10 +706,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         onkeydown="if(event.key==='Enter')doLogin()">
       <div id="auth-turnstile" style="margin:8px 0 0"></div>
       <div id="auth-err" style="color:#e3000f;font-size:12px;font-weight:600;height:16px;margin-top:8px;"></div>
-      <!-- 15/10: el botón arranca en "Verificando el navegador…" (atenuado) y pasa a "Entrar" cuando llega el token (tsBoton) -->
-      <style>#auth-btn.verificando { opacity: .65; cursor: progress !important; }</style>
+      <!-- 15/10: el botón arranca griseado y se habilita cuando llega el token (tsBoton); dice siempre "Entrar" -->
+      <style>#auth-btn.verificando { opacity: .5; filter: grayscale(1); cursor: progress !important; }</style>
       <button id="auth-btn" onclick="doLogin()" class="verificando"
-        style="width:100%;margin-top:10px;padding:11px;background:#0071e3;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">Verificando el navegador…</button>
+        style="width:100%;margin-top:10px;padding:11px;background:#0071e3;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">Entrar</button>
       <div id="auth-ts-nota" style="display:none;margin-top:8px;font-size:12px;color:#86868b;text-align:center">Estamos verificando que el navegador sea seguro. Tarda unos segundos; el botón se habilita solo.</div>
     </div>
   </div>
@@ -1457,7 +1462,8 @@ function tsCargar() {
   };
   if (window.turnstile) return render();
   const ya = document.getElementById('ts-script');
-  if (ya) { ya.addEventListener('load', render); return; }
+  // 15/10: el script ya viene puesto desde el arranque; si falló antes de llegar acá, su onerror dejó data-err
+  if (ya) { if (ya.dataset.err) { TS_FALLO = true; tsBoton(); return; } ya.addEventListener('load', render); ya.addEventListener('error', () => { TS_FALLO = true; tsBoton(); }); return; }
   const s = document.createElement('script'); s.id = 'ts-script'; s.async = true; s.onload = render; s.onerror = () => { TS_FALLO = true; tsBoton(); };
   s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
   document.head.appendChild(s);
@@ -1471,14 +1477,15 @@ function tsPedir() {
   try { turnstile.execute(TS_WIDGET); } catch (e) { TS_PEDIDO = false; TS_ERRORES++; if (TS_ERRORES >= 6) TS_FALLO = true; }
   tsBoton();
 }
-/* 15/10 (mismo cambio que DIMO del 15/10): el botón arranca en "Verificando el navegador…" (atenuado, con una nota abajo)
+/* 15/10 (mismo cambio que DIMO del 15/10): el botón arranca griseado (dice "Entrar", con una nota abajo)
    apenas se ve el login y pasa a "Entrar" cuando llega el token de Cloudflare. No se deshabilita: si lo tocan igual, el
    login NO sale sin token — espera (tsToken) y entra solo apenas llega, así nadie tiene que tocar dos veces. */
 function tsBoton() {
   const btn = document.getElementById('auth-btn'), nota = document.getElementById('auth-ts-nota');
   if (!btn || LOGIN_EN_CURSO) return;
   const verificando = !!TURNSTILE_SITE_KEY && !TS_TOKEN && !TS_FALLO && (TS_PEDIDO || (TS_AL_ABRIR && TS_WIDGET === null));
-  btn.classList.toggle('verificando', verificando); btn.textContent = verificando ? 'Verificando el navegador…' : 'Entrar';
+  // 15/10 (Mariano: "que diga 'Entrar' pero griseado; la leyenda de abajo ya dice que está verificando")
+  btn.classList.toggle('verificando', verificando); btn.textContent = 'Entrar';
   if (nota) nota.style.display = verificando ? '' : 'none';
 }
 // Token para Supabase: espera hasta 30 s a que Cloudflare lo emita. undefined = sin CAPTCHA configurado.
@@ -1548,7 +1555,7 @@ async function doLogin() {
   btn.disabled = true; btn.textContent = 'Entrando…';
   try {
     const nota = document.getElementById('auth-ts-nota');
-    const verificando = () => { btn.textContent = 'Verificando el navegador…'; if (nota) nota.style.display = ''; };
+    const verificando = () => { btn.textContent = 'Entrar'; btn.classList.add('verificando'); if (nota) nota.style.display = ''; };
     const captchaToken = await tsToken(verificando);   // Turnstile (si está configurado)
     btn.textContent = 'Entrando…'; btn.classList.remove('verificando'); if (nota) nota.style.display = 'none';
     let { error } = await sb.auth.signInWithPassword({ email, password: pass, options: captchaToken ? { captchaToken } : undefined });
@@ -1557,7 +1564,7 @@ async function doLogin() {
     if (error && /captcha/i.test(error.message || '') && !CURRENT_USER && TURNSTILE_SITE_KEY) {
       tsReset(); btn.disabled = true; btn.classList.remove('verificando');
       const t2 = await tsToken(verificando);
-      btn.textContent = 'Entrando…'; if (nota) nota.style.display = 'none';
+      btn.textContent = 'Entrando…'; btn.classList.remove('verificando'); if (nota) nota.style.display = 'none';
       ({ error } = await sb.auth.signInWithPassword({ email, password: pass, options: t2 ? { captchaToken: t2 } : undefined }));
     }
     tsReset();
